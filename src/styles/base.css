@@ -1,0 +1,229 @@
+﻿/* ==========================================================================
+   Base layer — element defaults and the shared primitives every screen uses.
+
+   Rule of thumb throughout: if a rule needs a number, it reads a token.
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--surface-page);
+  color: var(--ink-primary);
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* Native-feeling: no text selection on chrome, selection allowed in content. */
+body {
+  user-select: none;
+  cursor: default;
+}
+
+h1,
+h2,
+h3,
+p,
+figure {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--surface-active);
+  color: var(--ink-primary);
+}
+
+/* Scrollbars: present but quiet, so long documents never feel boxed in. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-full);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-tertiary);
+  background-clip: content-box;
+}
+
+/* --------------------------------------------------------------------------
+   Buttons — three tiers, distinguished by contrast and weight only.
+
+   Primary: the one action that moves the task forward on this screen.
+   Secondary: a real alternative, quieter than primary.
+   Tertiary: navigational or destructive-but-not-main; reads as text.
+   -------------------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: var(--control-md);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Primary — solid ink. Exactly one per screen region. */
+.btn--primary {
+  background: var(--surface-ink);
+  color: var(--ink-inverse);
+  box-shadow: var(--shadow-e1);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--surface-ink-hover);
+}
+
+.btn--primary:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* Secondary — outline via hairline only, no fill until hover. */
+.btn--secondary {
+  color: var(--ink-primary);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.btn--secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.btn--secondary:active:not(:disabled) {
+  background: var(--surface-active);
+  transform: translateY(1px);
+}
+
+/* Tertiary — looks like a link, but is a button. Emphasis on hover only. */
+.btn--tertiary {
+  height: var(--hit-min);
+  padding: 0 var(--space-2);
+  color: var(--ink-secondary);
+  font-weight: var(--weight-normal);
+}
+
+.btn--tertiary:hover:not(:disabled) {
+  color: var(--ink-primary);
+  background: var(--surface-hover);
+}
+
+/* Danger is intentionally NOT a red solid button. Deleting an entry is never
+   the main task of a screen, so it gets tertiary treatment with a color hint
+   that only appears on intent. */
+.btn--danger {
+  height: var(--hit-min);
+  padding: 0 var(--space-2);
+  color: var(--ink-tertiary);
+  font-weight: var(--weight-normal);
+}
+
+.btn--danger:hover:not(:disabled) {
+  color: var(--tone-danger);
+  background: var(--tone-danger-surface);
+}
+
+/* --------------------------------------------------------------------------
+   Text roles
+   -------------------------------------------------------------------------- */
+
+.text-secondary {
+  color: var(--ink-secondary);
+}
+
+.text-tertiary {
+  color: var(--ink-tertiary);
+}
+
+/* Small caps-ish metadata without letter-spacing games: just small + gray. */
+.meta {
+  font-size: var(--text-xs);
+  color: var(--ink-tertiary);
+  line-height: var(--leading-snug);
+}
+
+/* --------------------------------------------------------------------------
+   Utility
+   -------------------------------------------------------------------------- */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "litearti",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A quiet desktop reader for TXT, PDF and audio files.",
+  "scripts": {
+    "prepare:pdfjs": "node scripts/copy-pdfjs-assets.mjs",
+    "dev": "pnpm prepare:pdfjs && vite",
+    "build": "pnpm prepare:pdfjs && vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "pdfjs-dist": "^6.4.299",
+    "pinia": "^4.1.0",
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/node": "^26.6.5",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.7",
+    "vue-tsc": "^3.3.13"
+  }
+}

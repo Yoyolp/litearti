@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permissions the litearti main window needs: the native file-open dialog, and the webview drag-drop subscription used for importing by drag.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}

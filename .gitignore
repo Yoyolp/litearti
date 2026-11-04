@@ -1,0 +1,14 @@
+﻿# Dependencies
+node_modules/
+
+# Build output
+dist/
+src-tauri/target/
+
+# Generated pdf.js runtime assets (recreated by `pnpm prepare:pdfjs`)
+public/pdfjs/
+
+# Local scratch
+.testdata/
+*.local
+.devlog*.txt

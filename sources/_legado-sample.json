@@ -1,0 +1,56 @@
+[
+  {
+    "bookSourceName": "酷我小说",
+    "bookSourceType": 0,
+    "bookSourceUrl": "http://appi.kuwo.cn",
+    "enabled": true,
+    "header": "{ \"Accept\": \"*/*\", \"User-Agent\": \"Dalvik/2.1.0 (Linux; U; Android 8.0.0)\" }",
+    "searchUrl": "/novels/api/book/search?keyword={{key}}&pi={{page}}&ps=30",
+    "ruleSearch": {
+      "bookList": "$.data",
+      "name": "$.title",
+      "author": "$.author_name",
+      "coverUrl": "$.cover_url",
+      "intro": "$.intro",
+      "bookUrl": "/novels/api/book/{{$.book_id}}"
+    },
+    "ruleBookInfo": {
+      "init": "$.data",
+      "name": "$.title",
+      "author": "$.author_name",
+      "coverUrl": "$.cover_url",
+      "intro": "$.intro",
+      "tocUrl": "/novels/api/book/{{$.book_id}}/chapters?paging=0"
+    },
+    "ruleToc": {
+      "chapterList": "$.data",
+      "chapterName": "$.chapter_title",
+      "chapterUrl": "/novels/api/book/{{$.book_id}}/chapters/{{$.chapter_id}}"
+    },
+    "ruleContent": { "content": "$.data.content" }
+  },
+  {
+    "bookSourceName": "就爱文学",
+    "bookSourceType": 0,
+    "bookSourceUrl": "http://www.92xs.info",
+    "enabled": true,
+    "searchUrl": "/modules/article/search.php,{'method':'post','body':'searchtype=articlename&searchkey={{key}}','charset':'gbk'}",
+    "ruleSearch": {
+      "bookList": "#author@tbody@tr!0",
+      "name": ".odd.0@text",
+      "author": ".odd.1@text",
+      "bookUrl": "a.0@href"
+    },
+    "ruleBookInfo": {
+      "name": ".d_title h1@text",
+      "author": ".p_author@text",
+      "tocUrl": ".newrap a.0@href"
+    },
+    "ruleToc": {
+      "chapterList": ".ccss",
+      "chapterName": "a@text",
+      "chapterUrl": "a@href"
+    },
+    "ruleContent": { "content": "#ccontent@textNodes" }
+  }
+]

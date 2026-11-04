@@ -1,0 +1,181 @@
+/* ==========================================================================
+   Design tokens — the single source of truth for every visual decision.
+
+   Nothing in this app may invent a spacing value, font size, or shadow.
+   Everything is picked from these scales. If something needs a new value,
+   it gets added here first, so the system stays learnable.
+
+   The palette is deliberately near-monochrome. Hierarchy is carried by
+   spacing, size, contrast, and weight — never by hue. The only chromatic
+   values are semantic status colors, used at small area and low saturation.
+   ========================================================================== */
+
+:root {
+  /* --- Spacing scale -----------------------------------------------------
+     A 4px base with hand-picked steps. Layout uses these; the gap between
+     groups is always at least two steps larger than the gap inside a group. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+
+  /* --- Type scale --------------------------------------------------------
+     px only, hand-tuned rather than geometric. Reading sizes sit in the
+     15–18px band; anything smaller than 12px is not allowed for prose. */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-md: 17px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --text-2xl: 30px;
+
+  /* --- Line heights ------------------------------------------------------
+     Inversely proportional to size: tight for headings, open for prose. */
+  --leading-tight: 1.2;
+  --leading-snug: 1.45;
+  --leading-normal: 1.65;
+  --leading-relaxed: 1.9;
+
+  /* --- Weights -----------------------------------------------------------
+     Only two working weights. 300 is reserved for nothing; body text never
+     goes below 400. */
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-strong: 600;
+
+  /* --- Ink (text) --------------------------------------------------------
+     Three levels only: primary content, secondary metadata, tertiary hints. */
+  --ink-primary: #1c1c1c;
+  --ink-secondary: #6b6b6b;
+  --ink-tertiary: #9a9a9a;
+  --ink-inverse: #ffffff;
+
+  /* --- Surfaces ----------------------------------------------------------
+     A shallow ramp from page to raised. Depth comes from these plus shadow,
+     not from borders. */
+  --surface-page: #fafafa;
+  --surface-sunken: #f2f2f2;
+  --surface-raised: #ffffff;
+  --surface-hover: #f0f0f0;
+  --surface-active: #e8e8e8;
+  --surface-ink: #1c1c1c;
+  --surface-ink-hover: #333333;
+
+  /* --- Hairlines ---------------------------------------------------------
+     Used sparingly: separators inside dense lists, and the one true border
+     on inputs. Never to outline every card. */
+  --line-subtle: #ebebeb;
+  --line-strong: #d6d6d6;
+
+  /* --- Elevation ---------------------------------------------------------
+     Larger + softer = closer to the user. Buttons sit at e1, popovers e2,
+     modals e3. Pressing an element removes a level. */
+  --shadow-e1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-e2: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-e3: 0 16px 48px rgba(0, 0, 0, 0.16), 0 4px 12px rgba(0, 0, 0, 0.06);
+
+  /* --- Radii -------------------------------------------------------------
+     A small ladder. Large radii on large surfaces only. */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  /* --- Control sizes -----------------------------------------------------
+     Heights for interactive elements, and the geometry of small parts.
+     Anything with a fixed height picks from here so rows line up across
+     screens without pixel-peeping. */
+  --control-sm: 28px;
+  --control-md: 36px;
+  --control-lg: 40px;
+  --hit-min: 32px;
+  --thumb-size: 12px;
+  --track-thickness: 4px;
+  --hairline: 1px;
+  --ext-column: 40px;
+  --search-width: 148px;
+  --menu-min-width: 180px;
+  --measure-narrow: 380px;
+  --volume-width: 88px;
+  --scrollbar-size: 10px;
+
+  /* --- Shell geometry ----------------------------------------------------
+     The sidebar has exactly two widths: full (labels visible) and rail
+     (icons only). Collapsing to the rail is what makes "minimal mode" the
+     same screen as "dashboard mode" rather than a second design. */
+  --sidebar-width: 208px;
+  --sidebar-rail: 56px;
+  --sidebar-item-height: 38px;
+
+  /* --- Focus -------------------------------------------------------------
+     One visible focus treatment everywhere, so keyboard use is predictable. */
+  --focus-ring: 0 0 0 2px var(--surface-page), 0 0 0 4px #1c1c1c;
+
+  /* --- Semantic (used at small area, never as decoration) ---------------- */
+  --tone-danger: #8f3a34;
+  --tone-danger-surface: #fbf1f0;
+  --tone-warning: #7a5a1e;
+  --tone-warning-surface: #fbf6ea;
+
+  /* --- Data display ------------------------------------------------------
+     Chart bars are meaningful graphics, so they need real contrast, not the
+     faintest ramp step. The fill is dark enough to read as data on the page
+     background (≈4.9:1) and the track is visible as a scale without
+     competing with it. These are deliberately separate from the surface
+     ramp: `--surface-active` is tuned for hover states, not for encoding. */
+  --chart-fill: var(--ink-secondary);
+  --chart-fill-strong: var(--ink-primary);
+  --chart-track: var(--line-strong);
+
+  /* --- Motion ------------------------------------------------------------
+     Short and quiet. Nothing bounces. */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+
+  /* --- Layout ------------------------------------------------------------ */
+  --measure-prose: 34em;
+  --shell-max: 1180px;
+  --shell-pad: var(--space-6);
+  /* Horizontal inset for content inside the shell. Smaller than the old
+     48px because the sidebar now supplies the left margin; keeping both
+     would push the content column far off-centre. */
+  --content-pad: var(--space-6);
+}
+
+/* Dark theme redefines only the ink/surface ramp; every other token is
+   shared, so spacing and type rhythm stay identical across themes. */
+:root[data-theme='dark'] {
+  --ink-primary: #ededed;
+  --ink-secondary: #9e9e9e;
+  --ink-tertiary: #6f6f6f;
+  --ink-inverse: #161616;
+
+  --surface-page: #161616;
+  --surface-sunken: #1d1d1d;
+  --surface-raised: #232323;
+  --surface-hover: #2a2a2a;
+  --surface-active: #333333;
+  --surface-ink: #ededed;
+  --surface-ink-hover: #ffffff;
+
+  --line-subtle: #2b2b2b;
+  --line-strong: #3a3a3a;
+
+  --shadow-e1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-e2: 0 4px 12px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-e3: 0 16px 48px rgba(0, 0, 0, 0.7), 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  --focus-ring: 0 0 0 2px var(--surface-page), 0 0 0 4px #ededed;
+
+  --tone-danger: #d99a94;
+  --tone-danger-surface: #2a1d1c;
+  --tone-warning: #d4b06a;
+  --tone-warning-surface: #2a2418;
+}

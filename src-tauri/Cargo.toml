@@ -1,0 +1,47 @@
+[package]
+name = "litearti"
+version = "0.1.0"
+description = "A quiet desktop reader for TXT, PDF and audio files."
+authors = ["litearti"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "litearti_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+encoding_rs = "0.8"
+# HTTP for book sources. `rustls` avoids a system OpenSSL dependency, which
+# keeps the binary self-contained (the project already ships as a single exe).
+# Note: reqwest 0.13 renamed the feature from `rustls-tls` to `rustls`.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "http2"] }
+
+[dev-dependencies]
+# Only the async tests in `net.rs` need a runtime; production code runs inside
+# the runtime Tauri already provides. `macros` and `rt` are what `#[tokio::test]`
+# expands to.
+tokio = { version = "1", features = ["macros", "rt"] }
+
+# Reading the cookies a login produced goes through WebView2's cookie manager,
+# which is where the session already lives. Both versions must match what Tauri
+# 2.12 itself depends on: the COM interfaces are the *same* Rust types only when
+# the crates unify, otherwise `controller()` hands back an incompatible type.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
