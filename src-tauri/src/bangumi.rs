@@ -310,6 +310,224 @@ pub fn clear_cache(root: &Path) -> AppResult<()> {
     Ok(())
 }
 
+// --- Cover cache -----------------------------------------------------------
+
+/// Directory holding cached cover images, under the sources root.
+const COVER_DIR: &str = "bangumi-covers";
+
+/// Record of URLs that failed to download.
+const COVER_FAILURES: &str = "bangumi-cover-failures.json";
+
+/// How long a failed cover stays failed before it is retried.
+///
+/// Covers come from `api.bgm.tv`, which is unreachable from some networks. Without
+/// this, every render of a 24-card grid fires 24 requests that each hang until the
+/// timeout — the grid looks fine but the app spends a minute doing nothing useful.
+/// An hour is short enough that fixing the network takes effect on the next launch,
+/// and long enough that browsing does not re-attempt constantly.
+const COVER_FAILURE_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// Ceiling for one cover. Real covers are 30–200 KB.
+const MAX_COVER_BYTES: usize = 3 * 1024 * 1024;
+
+/// Timeout for one cover download. Shorter than a metadata fetch: a cover is small
+/// and the UI has a fallback, so waiting long for it is pure loss.
+const COVER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Stable 64-bit FNV-1a hash, used to name cache files.
+///
+/// A hash rather than a sanitised URL: URLs contain characters no filesystem wants,
+/// and can exceed the path length limit. Collisions are theoretically possible but
+/// this is a cache of cover art — a collision would show the wrong thumbnail, and
+/// writing a full digest would need a crate for no real benefit.
+fn fnv1a(input: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in input.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn cover_dir(root: &Path) -> PathBuf {
+    root.join(COVER_DIR)
+}
+
+/// Pick a file extension from a content type.
+fn extension_for(content_type: &str) -> &'static str {
+    let value = content_type.to_ascii_lowercase();
+    if value.contains("png") {
+        "png"
+    } else if value.contains("webp") {
+        "webp"
+    } else if value.contains("gif") {
+        "gif"
+    } else if value.contains("avif") {
+        "avif"
+    } else {
+        // JPEG is Bangumi's default and the safe assumption for an unlabelled image.
+        "jpg"
+    }
+}
+
+/// Read the negative cache, dropping entries older than the TTL.
+fn load_failures(root: &Path) -> std::collections::BTreeMap<String, u64> {
+    let Ok(raw) = crate::sources::read_json(&cover_dir(root).join(COVER_FAILURES), "{}") else {
+        return Default::default();
+    };
+    let parsed: std::collections::BTreeMap<String, u64> =
+        serde_json::from_str(&raw).unwrap_or_default();
+    let now = now_millis();
+    parsed
+        .into_iter()
+        .filter(|(_, at)| now.saturating_sub(*at) <= COVER_FAILURE_TTL.as_millis() as u64)
+        .collect()
+}
+
+fn save_failures(root: &Path, failures: &std::collections::BTreeMap<String, u64>) {
+    if let Ok(json) = serde_json::to_string(failures) {
+        let _ = crate::sources::write_json(&cover_dir(root).join(COVER_FAILURES), &json);
+    }
+}
+
+/// Get a local path for a cover, downloading it the first time.
+///
+/// Returns `Ok(None)` when the image cannot be fetched — that is **not an error**.
+/// The UI has a typographic fallback, and a missing thumbnail is a cosmetic problem;
+/// surfacing it as an error would put a banner over a working screen.
+///
+/// Failures are remembered for [`COVER_FAILURE_TTL`] so a grid of cards does not
+/// re-attempt every unreachable URL on every render.
+pub async fn cover(root: &Path, url: &str) -> AppResult<Option<String>> {
+    // Only http(s). A cover URL comes from a remote API, so it is not trusted; a
+    // `file:` URL here would turn this into a local file reader.
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| AppError::Invalid(format!("封面地址不合法：{error}")))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(AppError::Invalid(format!(
+            "封面只支持 http/https，实际是 {}",
+            parsed.scheme()
+        )));
+    }
+
+    let dir = cover_dir(root);
+    let stem = format!("{:016x}", fnv1a(url));
+
+    // A hit is a file that already exists under any supported extension.
+    for extension in ["jpg", "png", "webp", "gif", "avif"] {
+        let candidate = dir.join(format!("{stem}.{extension}"));
+        if candidate.is_file() {
+            return Ok(Some(candidate.to_string_lossy().to_string()));
+        }
+    }
+
+    // Recently failed: do not retry yet.
+    if load_failures(root).contains_key(url) {
+        return Ok(None);
+    }
+
+    let client = match reqwest::Client::builder()
+        .timeout(COVER_TIMEOUT)
+        .user_agent(USER_AGENT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return Ok(None),
+    };
+
+    let response = match client.get(parsed).send().await {
+        Ok(response) => response,
+        Err(_) => {
+            let mut failures = load_failures(root);
+            failures.insert(url.to_string(), now_millis());
+            save_failures(root, &failures);
+            return Ok(None);
+        }
+    };
+
+    if !response.status().is_success() {
+        let mut failures = load_failures(root);
+        failures.insert(url.to_string(), now_millis());
+        save_failures(root, &failures);
+        return Ok(None);
+    }
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .to_string();
+
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+
+    if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES {
+        let mut failures = load_failures(root);
+        failures.insert(url.to_string(), now_millis());
+        save_failures(root, &failures);
+        return Ok(None);
+    }
+
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return Err(AppError::Invalid(format!("无法创建封面目录：{error}")));
+    }
+
+    let path = dir.join(format!("{stem}.{}", extension_for(&content_type)));
+    if let Err(error) = std::fs::write(&path, &bytes) {
+        return Err(AppError::Invalid(format!("无法写入封面：{error}")));
+    }
+
+    // Success: forget the failure record, so a transient outage does not keep the
+    // image hidden for the rest of the TTL.
+    let mut failures = load_failures(root);
+    if failures.remove(url).is_some() {
+        save_failures(root, &failures);
+    }
+
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/// Bytes and file count of the cover cache, for the settings page.
+///
+/// The failure record lives in the same directory but is **not** a cached cover: it is
+/// a bookkeeping file a few dozen bytes long. Counting it would make an empty cache
+/// report "1 file", which reads as a bug to anyone looking at the number.
+pub fn cover_cache_size(root: &Path) -> AppResult<(u64, usize)> {
+    let dir = cover_dir(root);
+    if !dir.is_dir() {
+        return Ok((0, 0));
+    }
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|error| AppError::Invalid(format!("无法读取封面目录：{error}")))?;
+    for entry in entries.flatten() {
+        if entry.file_name() == std::ffi::OsStr::new(COVER_FAILURES) {
+            continue;
+        }
+        if let Ok(metadata) = entry.metadata() {
+            if metadata.is_file() {
+                bytes += metadata.len();
+                files += 1;
+            }
+        }
+    }
+    Ok((bytes, files))
+}
+
+/// Delete every cached cover.
+pub fn clear_covers(root: &Path) -> AppResult<()> {
+    let dir = cover_dir(root);
+    if dir.is_dir() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|error| AppError::Invalid(format!("无法删除封面缓存：{error}")))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,5 +658,136 @@ mod tests {
         // A guard on the constant, not on timing: sleeping in a unit test would make
         // the suite slow and flaky for no extra confidence.
         assert!(MIN_INTERVAL >= Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn the_cover_hash_is_stable_and_avoids_unsafe_characters() {
+        // The hash names a file, so it must be pure hex: no slashes, no colons, no
+        // characters a filesystem rejects.
+        let left = fnv1a("https://api.bgm.tv/v0/subjects/1/image?type=grid");
+        let right = fnv1a("https://api.bgm.tv/v0/subjects/1/image?type=grid");
+        assert_eq!(left, right, "the same URL must hash the same way");
+        assert_ne!(left, fnv1a("https://api.bgm.tv/v0/subjects/2/image?type=grid"));
+
+        let name = format!("{left:016x}");
+        assert_eq!(name.len(), 16);
+        assert!(name.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    }
+
+    #[test]
+    fn the_extension_follows_the_content_type() {
+        assert_eq!(extension_for("image/png"), "png");
+        assert_eq!(extension_for("image/jpeg"), "jpg");
+        assert_eq!(extension_for("IMAGE/WEBP"), "webp");
+        assert_eq!(extension_for("image/avif"), "avif");
+        // An unlabelled image is almost always a JPEG here.
+        assert_eq!(extension_for("application/octet-stream"), "jpg");
+        assert_eq!(extension_for(""), "jpg");
+    }
+
+    #[test]
+    fn a_cover_url_must_be_http() {
+        let root = temp_root("cover");
+        let error = tauri::async_runtime::block_on(cover(&root, "file:///etc/passwd"))
+            .expect_err("must reject");
+        assert!(error.to_string().contains("http"), "{error}");
+        // A failed scheme check must not leave a cache directory behind.
+        assert!(!cover_dir(&root).exists());
+    }
+
+    #[test]
+    fn a_cached_cover_is_found_without_a_request() {
+        let root = temp_root("coverhit");
+        let dir = cover_dir(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let url = "https://api.bgm.tv/v0/subjects/1/image?type=grid";
+        let expected = dir.join(format!("{:016x}.jpg", fnv1a(url)));
+        std::fs::write(&expected, b"not really a jpeg").unwrap();
+
+        // The path is returned from the existing file, so no network is touched — the
+        // test passes with no connectivity, which is the point.
+        let found = tauri::async_runtime::block_on(cover(&root, url)).unwrap();
+        assert_eq!(found.as_deref(), Some(expected.to_string_lossy().as_ref()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_recent_failure_is_not_retried() {
+        // This is what stops a 24-card grid from firing 24 doomed requests on every
+        // render when the image host is unreachable.
+        let root = temp_root("coverfail");
+        let dir = cover_dir(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let url = "https://api.bgm.tv/v0/subjects/1/image?type=grid";
+        let mut failures = std::collections::BTreeMap::new();
+        failures.insert(url.to_string(), now_millis());
+        save_failures(&root, &failures);
+
+        assert!(load_failures(&root).contains_key(url));
+        // The call returns None immediately rather than attempting a request.
+        let result = tauri::async_runtime::block_on(cover(&root, url)).unwrap();
+        assert!(result.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_expired_failure_is_forgotten() {
+        let root = temp_root("coverexpire");
+        let dir = cover_dir(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let url = "https://api.bgm.tv/x.jpg";
+        let mut failures = std::collections::BTreeMap::new();
+        // Older than the TTL.
+        failures.insert(url.to_string(), now_millis().saturating_sub(2 * 60 * 60 * 1000));
+        save_failures(&root, &failures);
+
+        // Reading prunes it, so the next attempt happens after the network is fixed.
+        assert!(!load_failures(&root).contains_key(url));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_cover_cache_reports_its_size_and_clears() {
+        let root = temp_root("coversize");
+        let dir = cover_dir(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.jpg"), vec![0u8; 1000]).unwrap();
+        std::fs::write(dir.join("b.png"), vec![0u8; 500]).unwrap();
+
+        let (bytes, files) = cover_cache_size(&root).unwrap();
+        assert_eq!(files, 2);
+        assert_eq!(bytes, 1500);
+
+        clear_covers(&root).unwrap();
+        assert_eq!(cover_cache_size(&root).unwrap(), (0, 0));
+        // Clearing twice is not an error.
+        clear_covers(&root).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_failure_record_is_not_counted_as_a_cached_cover() {
+        // The bookkeeping file lives beside the images. Counting it would make an
+        // empty cache report "1 file", which looks like a bug in the number.
+        let root = temp_root("covercount");
+        let dir = cover_dir(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        save_failures(&root, &[("https://x/y.jpg".to_string(), now_millis())].into_iter().collect());
+
+        assert_eq!(cover_cache_size(&root).unwrap(), (0, 0));
+
+        std::fs::write(dir.join("c.jpg"), vec![0u8; 42]).unwrap();
+        assert_eq!(cover_cache_size(&root).unwrap(), (42, 1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_absent_cover_directory_is_not_an_error() {
+        let root = temp_root("coversize2");
+        // No directory was ever created: a fresh install, before any cover loaded.
+        assert_eq!(cover_cache_size(&root).unwrap(), (0, 0));
     }
 }

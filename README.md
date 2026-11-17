@@ -9,7 +9,9 @@
 1. **源** —— 只访问你添加的源所指向的网站，不上传任何本地数据。
 2. **发现** —— 访问 Bangumi 的镜像取番剧资料（播出时间、评分、简介）。只发送季度日期，不发送任何本地数据、也不发送任何能标识你的信息。详见 [`docs/bangumi.md`](docs/bangumi.md)。
 
-除这两处，没有别的功能会离开这台机器。
+社区规则通过镜像获取（GitCode / gh-proxy / 直连 GitHub 三选一），同样只走 Rust。
+
+除这些，没有别的功能会离开这台机器。
 
 **技术栈**：Tauri 2 + Vue 3 + TypeScript + Vite。没有 UI 组件库——界面完全由 `src/styles/tokens.css` 里的设计系统长出来。运行时前端依赖 6 个（hls.js 只在播视频时才加载），Rust 直接依赖 7 个。
 
@@ -142,7 +144,11 @@ pnpm app:build    # 构建 release 二进制（不打包安装程序）
 
 | 文档 | 内容 |
 |---|---|
+| [`docs/project-map/`](docs/project-map/README.md) | **代码审计入口**：目录职责、分层与边界、决定记录（含被拒绝的方案）、审计清单与已知弱点 |
 | [`docs/project-overview.md`](docs/project-overview.md) | **项目详细介绍**：架构、数据模型、技术选型理由、限制与后续方向 |
+| [`docs/bangumi.md`](docs/bangumi.md) | 发现：Bangumi 镜像、端点形状差异、匹配策略、封面缓存与负缓存 |
+| [`docs/sniffing.md`](docs/sniffing.md) | WebView 嗅探：CDP 采集、label 安全边界、三处只能实机踩出来的坑 |
+| [`docs/stream-proxy.md`](docs/stream-proxy.md) | 播放代理：URL 形状、m3u8 重写、两种 CORS 陷阱、平台差异 |
 | [`docs/epub-viewer.md`](docs/epub-viewer.md) | EPUB 查看器：零依赖解压、双路径目录、iframe 安全边界、断网保证 |
 | [`docs/export.md`](docs/export.md) | 导出：原字节拷贝、PDF/EPUB → 文本的降级边界、写盘安全规则 |
 | [`docs/book-sources.md`](docs/book-sources.md) | 书源：设计取舍、沙箱与网络的安全边界 |
@@ -150,6 +156,7 @@ pnpm app:build    # 构建 release 二进制（不打包安装程序）
 | [`docs/txt-chapters.md`](docs/txt-chapters.md) | TXT 分章：识别规则、误判防护、进度兼容 |
 | [`docs/login-credentials.md`](docs/login-credentials.md) | 登录 Cookie（**搁置**）：已实现什么、删除了什么、剩余 bug 与恢复步骤 |
 | [`docs/legado-conversion.md`](docs/legado-conversion.md) | 从 Legado（阅读）书源转换：映射表、转不了的规则、已跑通的样例 |
+| [`docs/kazumi-community-sources.md`](docs/kazumi-community-sources.md) | Kazumi 社区规则调研：两种规则格式的换算 |
 | [`docs/viewer-contract.md`](docs/viewer-contract.md) | 查看器接口契约、自定义容器格式（漫画包）、安卓移植备忘 |
 | [`docs/design-system.md`](docs/design-system.md) | 间距/字号/阴影阶梯，以及每条设计规则的落地方式 |
 

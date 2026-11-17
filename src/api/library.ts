@@ -105,6 +105,27 @@ export async function invalidateSource(sourceId: string): Promise<number> {
   return invoke<number>('library_invalidate_source', { sourceId })
 }
 
+/**
+ * Pick one JSON file, for importing a source definition.
+ *
+ * Lives here rather than in the view so that **every** Tauri import sits in an
+ * adapter module. `SourcesView` used to call the dialog plugin directly, which was a
+ * real leak: this file exists so the webview's native surface is reachable from one
+ * place, and a view opening its own dialog quietly broke that.
+ *
+ * Returns null when the person cancels — cancellation is not an error.
+ */
+export async function pickSourceFile(): Promise<string | null> {
+  const selected = await openDialog({
+    multiple: false,
+    directory: false,
+    filters: [{ name: '源 JSON', extensions: ['json'] }],
+  })
+  if (!selected) return null
+  const path = Array.isArray(selected) ? selected[0] : selected
+  return path ?? null
+}
+
 /** Whether this build can sniff media, and why not when it cannot. */
 export interface SniffSupport {
   supported: boolean

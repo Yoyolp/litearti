@@ -6,14 +6,21 @@
  * status control is a small set of words rather than a dropdown, because there are
  * only four states and a select would hide them behind a click.
  *
- * Covers come from `api.bgm.tv`, a host this app otherwise never contacts, and they
- * fail often enough that the fallback is the normal path, not the exception. A failed
- * image becomes a typographic tile rather than a broken-image icon: a grid of broken
- * icons reads as "the app is broken".
+ * ## Covers go through the cache
+ *
+ * The cover hosts are unreachable from some networks. Pointing `<img src>` straight at
+ * them means every card fires its own request on every render, and each one hangs
+ * until the browser gives up — a grid of 24 cards makes the screen feel broken while
+ * it does nothing useful.
+ *
+ * So the URL is resolved through `bangumi_cover`, which stores successes on disk and
+ * remembers failures for an hour. A null result is the normal path when the network
+ * blocks the image host, and it renders the typographic fallback immediately.
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { t } from '@/i18n'
 import { displayName, scoreLabel, type Subject } from '@/discover/subject'
+import { coverUrl } from '@/discover/api'
 import { COLLECT_STATUSES, statusOf, setStatus, type CollectStatus } from '@/discover/collect'
 
 const props = defineProps<{
@@ -24,7 +31,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{ open: [subject: Subject] }>()
 
-const coverFailed = ref(false)
+/** Resolved, cache-backed URL. Null until resolved, and stays null when unavailable. */
+const cover = ref<string | null>(null)
 
 const title = computed(() => displayName(props.subject))
 const score = computed(() => scoreLabel(props.subject))
@@ -45,6 +53,21 @@ function toggle(status: CollectStatus): void {
   // would be more chrome than the feature deserves.
   setStatus(props.subject.id, current.value === status ? null : status)
 }
+
+// Prefer the grid rendition: it is what a tile needs, and downloading the large one
+// for a 112px card would waste bandwidth and disk.
+watch(
+  () => props.subject.images.grid ?? props.subject.images.large,
+  async (url) => {
+    cover.value = await coverUrl(url)
+  },
+  { immediate: true },
+)
+
+/** A resolved URL that turned out to be unusable still falls back. */
+function onImageError(): void {
+  cover.value = null
+}
 </script>
 
 <template>
@@ -52,13 +75,12 @@ function toggle(status: CollectStatus): void {
     <button class="subject-hit" type="button" @click="emit('open', subject)">
       <span class="cover">
         <img
-          v-if="subject.images.grid && !coverFailed"
+          v-if="cover"
           class="cover-image"
-          :src="subject.images.grid"
+          :src="cover"
           :alt="title"
           loading="lazy"
-          referrerpolicy="no-referrer"
-          @error="coverFailed = true"
+          @error="onImageError"
         />
         <span v-else class="cover-fallback" aria-hidden="true">{{ initial }}</span>
       </span>

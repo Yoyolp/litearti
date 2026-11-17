@@ -28,7 +28,7 @@
  * the concurrency count) are shown as labelled facts, not as disabled controls,
  * because a disabled slider implies it could be enabled.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { t } from '@/i18n'
 import { useThemeStore, type ThemeChoice } from '@/stores/theme'
 import {
@@ -41,10 +41,19 @@ import {
   type ReadingMode,
 } from '@/library/readingPrefs'
 import { sniffSupported } from '@/api/library'
+import { coverCacheStats, clearCovers, clearCache } from '@/discover/api'
+import { MIRRORS, loadMirror, saveMirror, type MirrorId } from '@/sources/mirror'
 
-type Category = 'appearance' | 'reading' | 'network' | 'storage' | 'about'
+type Category = 'appearance' | 'reading' | 'network' | 'rules' | 'storage' | 'about'
 
-const CATEGORIES: readonly Category[] = ['appearance', 'reading', 'network', 'storage', 'about']
+const CATEGORIES: readonly Category[] = [
+  'appearance',
+  'reading',
+  'network',
+  'rules',
+  'storage',
+  'about',
+]
 
 const active = ref<Category>('appearance')
 const theme = useThemeStore()
@@ -77,6 +86,73 @@ const MODES: readonly ReadingMode[] = ['scroll', 'page']
 
 /** The version string the app was built with, shown on the About page. */
 const version = computed(() => '0.1.0')
+
+// --- Rules mirror ----------------------------------------------------------
+
+const mirror = ref<MirrorId>(loadMirror())
+
+const MIRROR_LABELS: Record<MirrorId, string> = {
+  gitcode: t('settings.rules.mirror.gitcode'),
+  ghproxy: t('settings.rules.mirror.ghproxy'),
+  github: t('settings.rules.mirror.github'),
+}
+
+function chooseMirror(next: MirrorId): void {
+  mirror.value = next
+  saveMirror(next)
+}
+
+// --- Cache sizes -----------------------------------------------------------
+
+const coverStats = ref<{ bytes: number; files: number } | null>(null)
+const clearingCovers = ref(false)
+const clearingMeta = ref(false)
+/** A short-lived line confirming what just happened, since neither action is visible. */
+const cacheNotice = ref<string | null>(null)
+
+async function refreshCoverStats(): Promise<void> {
+  try {
+    coverStats.value = await coverCacheStats()
+  } catch {
+    coverStats.value = null
+  }
+}
+
+async function runClearCovers(): Promise<void> {
+  if (clearingCovers.value) return
+  clearingCovers.value = true
+  try {
+    await clearCovers()
+    cacheNotice.value = t('settings.storage.coversEmpty')
+    await refreshCoverStats()
+  } finally {
+    clearingCovers.value = false
+  }
+}
+
+async function runClearMeta(): Promise<void> {
+  if (clearingMeta.value) return
+  clearingMeta.value = true
+  try {
+    await clearCache()
+    cacheNotice.value = t('settings.storage.cleanupNone')
+  } finally {
+    clearingMeta.value = false
+  }
+}
+
+/** Human-readable byte size. Two units is enough for a cover cache. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// Refresh the numbers when the storage pane is opened, not on mount: the value is
+// only needed there, and computing it means a filesystem walk.
+watch(active, (value) => {
+  if (value === 'storage') void refreshCoverStats()
+})
 </script>
 
 <template>
@@ -272,6 +348,29 @@ const version = computed(() => '0.1.0')
             </section>
           </template>
 
+          <!-- Rules ----------------------------------------------------- -->
+          <template v-else-if="active === 'rules'">
+            <section class="card">
+              <h2 class="card-title">{{ t('settings.rules.mirror') }}</h2>
+              <p class="card-hint">{{ t('settings.rules.mirrorHint') }}</p>
+
+              <div class="choices" role="radiogroup" :aria-label="t('settings.rules.mirror')">
+                <button
+                  v-for="id in MIRRORS"
+                  :key="id"
+                  class="choice"
+                  type="button"
+                  role="radio"
+                  :aria-checked="mirror === id"
+                  :class="{ 'is-active': mirror === id }"
+                  @click="chooseMirror(id)"
+                >
+                  {{ MIRROR_LABELS[id] }}
+                </button>
+              </div>
+            </section>
+          </template>
+
           <!-- Storage --------------------------------------------------- -->
           <template v-else-if="active === 'storage'">
             <section class="card">
@@ -280,9 +379,55 @@ const version = computed(() => '0.1.0')
             </section>
 
             <section class="card">
-              <h2 class="card-title">{{ t('settings.storage.cleanup') }}</h2>
-              <p class="card-hint">{{ t('settings.storage.cleanupHint') }}</p>
+              <h2 class="card-title">{{ t('settings.storage.covers') }}</h2>
+              <p class="card-hint">{{ t('settings.storage.coversHint') }}</p>
+
+              <dl class="facts">
+                <div class="fact">
+                  <dt class="fact-label">{{ t('settings.storage.covers') }}</dt>
+                  <dd class="fact-value">
+                    <template v-if="coverStats && coverStats.files > 0">
+                      {{
+                        t('settings.storage.coversSize', {
+                          size: formatBytes(coverStats.bytes),
+                          count: coverStats.files,
+                        })
+                      }}
+                    </template>
+                    <template v-else>{{ t('settings.storage.coversEmpty') }}</template>
+                  </dd>
+                </div>
+              </dl>
+
+              <div class="card-foot">
+                <button
+                  class="btn btn--tertiary"
+                  type="button"
+                  :disabled="clearingCovers || !coverStats || coverStats.files === 0"
+                  @click="runClearCovers()"
+                >
+                  {{ t('settings.storage.coversClear') }}
+                </button>
+              </div>
             </section>
+
+            <section class="card">
+              <h2 class="card-title">{{ t('settings.storage.metaCache') }}</h2>
+              <p class="card-hint">{{ t('settings.storage.metaCacheHint') }}</p>
+
+              <div class="card-foot">
+                <button
+                  class="btn btn--tertiary"
+                  type="button"
+                  :disabled="clearingMeta"
+                  @click="runClearMeta()"
+                >
+                  {{ t('settings.storage.metaClear') }}
+                </button>
+              </div>
+            </section>
+
+            <p v-if="cacheNotice" class="card-hint" role="status">{{ cacheNotice }}</p>
 
             <section class="card">
               <h2 class="card-title">{{ t('settings.storage.export') }}</h2>

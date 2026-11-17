@@ -16,8 +16,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useSourcesStore } from '@/stores/sources'
 import { t } from '@/i18n'
 import { RESOURCE_TYPES, type ResourceType } from '@/sources/schema'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { onLoginFinished, readPickedTextFile } from '@/api/library'
+import { onLoginFinished, pickSourceFile, readPickedTextFile } from '@/api/library'
 import SourceFormFeedback from '@/components/SourceFormFeedback.vue'
 
 const emit = defineEmits<{
@@ -144,13 +143,7 @@ async function handleImport(): Promise<void> {
   store.clearIssues()
   importing.value = true
   try {
-    const picked = await openDialog({
-      multiple: false,
-      directory: false,
-      filters: [{ name: '源 JSON', extensions: ['json'] }],
-    })
-    if (!picked) return
-    const path = Array.isArray(picked) ? picked[0] : picked
+    const path = await pickSourceFile()
     if (!path) return
 
     const text = await readPickedTextFile(path)

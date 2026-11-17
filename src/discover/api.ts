@@ -12,7 +12,7 @@
  * for the same bug.
  */
 
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import {
   parseCalendar,
   parsePopular,
@@ -100,6 +100,40 @@ export async function loadPopular(offset = 0): Promise<PopularPage> {
 /** Drop the on-disk cache, so the next load hits the network. */
 export async function clearCache(): Promise<void> {
   await invoke('bangumi_clear_cache')
+}
+
+/**
+ * Resolve a remote cover to something the webview can render.
+ *
+ * The cover hosts (`api.bgm.tv`, `lain.bgm.tv`) are unreachable from some networks,
+ * and a grid of cards would otherwise fire one doomed request each on every render.
+ * Rust caches successes on disk and remembers failures for an hour, so this returns
+ * null quickly in the common failure case instead of hanging.
+ *
+ * A null result is not an error: the card falls back to a typographic tile.
+ */
+export async function coverUrl(url: string | null): Promise<string | null> {
+  if (!url) return null
+  try {
+    const path = await invoke<string | null>('bangumi_cover', { url })
+    // A local filesystem path cannot be used as an `<img src>`: the webview refuses
+    // `file://` origins. `convertFileSrc` rewrites it to the asset protocol, which
+    // Rust allows for the app data directory.
+    return path ? convertFileSrc(path) : null
+  } catch {
+    return null
+  }
+}
+
+/** Bytes and file count of the cover cache, for the settings page. */
+export async function coverCacheStats(): Promise<{ bytes: number; files: number }> {
+  const [bytes, files] = await invoke<[number, number]>('bangumi_cover_stats')
+  return { bytes, files }
+}
+
+/** Delete every cached cover. */
+export async function clearCovers(): Promise<void> {
+  await invoke('bangumi_clear_covers')
 }
 
 /** A season as a label, e.g. `2025 年 10 月`. */

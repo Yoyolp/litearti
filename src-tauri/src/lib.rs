@@ -10,6 +10,7 @@ mod login;
 mod model;
 mod net;
 mod proto;
+mod rules_mirror;
 mod sniff;
 mod sources;
 mod stream;
@@ -315,6 +316,52 @@ fn bangumi_clear_cache(app: tauri::AppHandle) -> AppResult<()> {
     bangumi::clear_cache(&sources_root(&app)?)
 }
 
+/// Resolve a cover URL to a local file path, downloading it on first use.
+///
+/// Returns `null` when the image cannot be fetched. Not an error: a missing
+/// thumbnail falls back to a typographic tile, and a banner over a working grid
+/// would be worse than the missing picture.
+#[tauri::command]
+async fn bangumi_cover(app: tauri::AppHandle, url: String) -> AppResult<Option<String>> {
+    bangumi::cover(&sources_root(&app)?, &url).await
+}
+
+/// Bytes and file count of the cover cache.
+#[tauri::command]
+fn bangumi_cover_stats(app: tauri::AppHandle) -> AppResult<(u64, usize)> {
+    bangumi::cover_cache_size(&sources_root(&app)?)
+}
+
+/// Delete every cached cover.
+#[tauri::command]
+fn bangumi_clear_covers(app: tauri::AppHandle) -> AppResult<()> {
+    bangumi::clear_covers(&sources_root(&app)?)
+}
+
+/// The community rule mirrors, in display order.
+#[tauri::command]
+fn rules_mirrors() -> Vec<&'static str> {
+    rules_mirror::all_mirrors()
+}
+
+/// Fetch the community rule catalogue through a mirror.
+#[tauri::command]
+async fn rules_index(app: tauri::AppHandle, mirror: String) -> AppResult<String> {
+    let mirror = rules_mirror::Mirror::parse(&mirror)?;
+    rules_mirror::fetch_index(&sources_root(&app)?, mirror).await
+}
+
+/// Fetch one community rule through a mirror.
+#[tauri::command]
+async fn rules_rule(
+    app: tauri::AppHandle,
+    mirror: String,
+    name: String,
+) -> AppResult<String> {
+    let mirror = rules_mirror::Mirror::parse(&mirror)?;
+    rules_mirror::fetch_rule(&sources_root(&app)?, mirror, &name).await
+}
+
 /// Import downloaded bytes into the library.
 ///
 /// Takes the bytes rather than a URL so the download itself stays in the
@@ -411,6 +458,12 @@ pub fn run() {
             bangumi_popular,
             bangumi_season_range,
             bangumi_clear_cache,
+            bangumi_cover,
+            bangumi_cover_stats,
+            bangumi_clear_covers,
+            rules_mirrors,
+            rules_index,
+            rules_rule,
             library_set_progress,
             library_touch,
             read_binary,
