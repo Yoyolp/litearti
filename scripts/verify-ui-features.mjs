@@ -150,7 +150,7 @@ async function main() {
     check('chaptered txt imported', !!imported?.id, JSON.stringify(imported))
 
     await session.reload()
-    await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')][1].click()`)
+    await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')].find((n) => n.textContent.trim() === '资料库')?.click()`)
     await sleep(1200)
 
     const opened = await session.evaluate(`
@@ -265,7 +265,7 @@ async function main() {
       })()
     `)
     await session.reload()
-    await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')][2].click()`)
+    await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')].find((n) => n.textContent.trim() === '源')?.click()`)
     await sleep(1200)
     await session.evaluate(`document.querySelector('.source-row .source-open')?.click()`)
     await sleep(1200)

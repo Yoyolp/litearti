@@ -117,6 +117,16 @@ async function main() {
     check('accepts every declared type', RESOURCE_TYPES.every((type) => {
       const source = validSource()
       source.type = type
+      // `video` requires a video block (see the video section below); the base
+      // fixture is a text source, so supply one here. The assertion is about the
+      // *type* being accepted, not about the block being optional.
+      if (type === 'video') {
+        source.video = {
+          episodes: 'css:.episode a',
+          episodeUrl: 'css:@href',
+          playback: { kind: 'direct', url: 'css:source@src' },
+        }
+      }
       return validateSource(source).ok
     }))
   }
@@ -157,9 +167,18 @@ async function main() {
     expectInvalid(validateSource, 'rejects selector without a prefix', (s) => {
       s.search.fields.title = '.title'
     })
+    // `xpath:` used to be the example of an unknown prefix; it is supported now
+    // (Kazumi's community rules are all XPath), so the example had to change to
+    // something that genuinely is not a prefix.
     expectInvalid(validateSource, 'rejects unknown prefix', (s) => {
-      s.search.fields.title = 'xpath://div'
+      s.search.fields.title = 'text:some text'
     })
+    // And the new prefix must be accepted, or the example above proves nothing.
+    check('accepts the xpath prefix', (() => {
+      const source = validSource()
+      source.search.fields.title = 'xpath://h3/a'
+      return validateSource(source).ok
+    })())
     expectInvalid(validateSource, 'rejects missing list selector', (s) => {
       delete s.search.list
     })

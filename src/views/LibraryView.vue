@@ -2,63 +2,292 @@
 /**
  * The library screen.
  *
- * This is the app's home, not a dashboard. It has one job: get you into a
- * file. So the layout is a single column of entries with a generous top area
- * reserved for the title and the import action — no cards, no grid, no stats.
+ * This is the app's home. It has one job: get you into a file. Two layouts serve
+ * that differently — a list for scanning titles, a grid for recognising things by
+ * shape — and both are the same data through the same query model
+ * (`src/library/query.ts`), so switching never changes what is shown, only how.
  *
  * Hierarchy here:
- *   - primary action: import (only when the library is empty, it's the hero;
- *     otherwise it's a quiet solid button in the header)
- *   - secondary: opening an entry (the whole row is the target)
- *   - tertiary: removing an entry (hidden until row hover)
+ *   - primary action: import (the hero when the library is empty, otherwise a
+ *     quiet solid button in the header)
+ *   - secondary: opening an entry (the whole row or card is the target)
+ *   - tertiary: removing, renaming (quiet until hover, or until selection mode)
+ *
+ * Selection mode is shared with export via `stores/selection.ts` and is reused
+ * here for batch deletion, because "pick some rows and act on them" is one
+ * interaction, not two features.
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useLibraryStore } from '@/stores/library'
 import { useExportStore } from '@/stores/export'
+import { useSelectionStore } from '@/stores/selection'
 import { t } from '@/i18n'
-import { extensionLabel, formatDuration, formatRelative, formatSize } from '@/utils/format'
+import { extensionLabel, formatRelative, formatSize } from '@/utils/format'
 import { onFileDrop } from '@/api/library'
+import {
+  applyQuery,
+  countsByStatus,
+  DEFAULT_QUERY,
+  displayTitle,
+  distinctGroups,
+  FORMAT_GROUPS,
+  formatGroupOf,
+  isDefaultQuery,
+  ORIGIN_FILTERS,
+  READ_STATUSES,
+  readStatusOf,
+  SORT_KEYS,
+  type FormatGroup,
+  type LibraryQuery,
+  type OriginFilter,
+  type ReadStatus,
+  type SortKey,
+} from '@/library/query'
+import { readProgress } from '@/library/progress'
+import { loadQuery, loadView, saveQuery, saveView, type LibraryView } from '@/library/viewPrefs'
 import type { Entry } from '@/types/viewer'
 import EmptyLibrary from '@/components/EmptyLibrary.vue'
 import ImportFeedback from '@/components/ImportFeedback.vue'
 import ExportMenu from '@/components/ExportMenu.vue'
 import ExportFeedback from '@/components/ExportFeedback.vue'
+import LibraryCard from '@/components/LibraryCard.vue'
 
 const emit = defineEmits<{ open: [entry: Entry] }>()
 
 const store = useLibraryStore()
 const exporter = useExportStore()
-const query = ref('')
-const dragging = ref(false)
-const confirmRemove = ref<Entry | null>(null)
-const dragDepth = ref(0)
+const selection = useSelectionStore()
 
-const filtered = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  if (!q) return store.sorted
-  return store.sorted.filter((entry) => entry.title.toLowerCase().includes(q))
-})
+// --- Query state -----------------------------------------------------------
+
+/**
+ * One reactive query object.
+ *
+ * Kept as a single ref rather than a ref per field so `watch` can persist it with
+ * one call and so `applyQuery` receives a value, not a pile of arguments. The
+ * stored default is loaded once at setup; validation lives in `viewPrefs.ts`.
+ */
+const query = ref<LibraryQuery>(loadQuery())
+const view = ref<LibraryView>(loadView())
+
+const visible = computed(() => applyQuery(store.entries, query.value))
 
 const isEmpty = computed(() => !store.loading && store.entries.length === 0)
-const searching = computed(() => query.value.trim().length > 0)
+const filtering = computed(() => !isDefaultQuery(query.value))
+const searching = computed(() => query.value.text.trim().length > 0)
 
-/** Entries the export action applies to: the visible list, search included. */
-const exportable = computed(() => filtered.value)
+/** Counts for the filter menus, computed over everything (not the filtered set). */
+const formatCounts = computed(() => {
+  const counts = Object.fromEntries(FORMAT_GROUPS.map((g) => [g, 0])) as Record<
+    FormatGroup,
+    number
+  >
+  for (const entry of store.entries) counts[formatGroupOf(entry.extension)] += 1
+  return counts
+})
+const statusCounts = computed(() => countsByStatus(store.entries))
+const groups = computed(() => distinctGroups(store.entries))
 
-function onSelectToggle(entry: Entry): void {
-  exporter.toggle(entry.id)
+/**
+ * The narrow statistics strip.
+ *
+ * What is left of the old dashboard: four numbers, no charts, no "recent" list.
+ * Format and status distributions were dropped because the list below already
+ * answers those questions with a filter, and showing the same fact twice in two
+ * shapes is how a UI starts disagreeing with itself.
+ *
+ * "This week" was dropped on purpose: for imported files it counted opens, and
+ * counting opens is not counting reading — a number that looks meaningful and is
+ * not is worse than no number.
+ */
+const stats = computed(() => {
+  const entries = store.entries
+  let reading = 0
+  let finished = 0
+  let bytes = 0
+  for (const entry of entries) {
+    const status = readStatusOf(entry)
+    if (status === 'reading') reading += 1
+    if (status === 'finished') finished += 1
+    // Only real files take space. An online entry is a few hundred bytes of
+    // metadata, and counting it as "local storage" would be a lie.
+    if (entry.kind !== 'online') bytes += entry.size
+  }
+  return { total: entries.length, reading, finished, bytes }
+})
+
+/** The source name shown on an online row, falling back to a generic label. */
+function sourceLabel(entry: Entry): string {
+  return entry.reference?.sourceName || t('library.origin.online')
 }
 
-async function runExport(): Promise<void> {
-  await exporter.run(exportable.value)
+/** The meta shown for an online entry in the list view. */
+function onlineMeta(entry: Entry): string {
+  const count = entry.reference?.episodeCount
+  return typeof count === 'number' && count > 0
+    ? t('library.online.episodes', { count })
+    : t('library.origin.online')
+}
+
+/**
+ * Label tables.
+ *
+ * Static maps rather than template strings: `t()` takes a closed key union, so a
+ * missing key is a compile error instead of a string that silently renders as the
+ * key itself.
+ */
+const SORT_LABELS: Record<SortKey, string> = {
+  recent: t('library.sort.recent'),
+  added: t('library.sort.added'),
+  title: t('library.sort.title'),
+  size: t('library.sort.size'),
+  progress: t('library.sort.progress'),
+}
+const FORMAT_LABELS: Record<FormatGroup, string> = {
+  text: t('library.format.text'),
+  pdf: t('library.format.pdf'),
+  epub: t('library.format.epub'),
+  audio: t('library.format.audio'),
+  other: t('library.format.other'),
+}
+const STATUS_LABELS: Record<ReadStatus, string> = {
+  unread: t('library.status.unread'),
+  reading: t('library.status.reading'),
+  finished: t('library.status.finished'),
+}
+
+/** Entries the header actions apply to: what is currently visible. */
+const actionable = computed(() => visible.value)
+
+// Preferences persist on change, not on every keystroke of the search box —
+// writing localStorage per character is pointless churn.
+watch([view], () => saveView(view.value))
+watch(
+  () => ({ ...query.value }),
+  (value) => saveQuery(value),
+)
+
+function setSort(sort: SortKey): void {
+  // Re-picking the active key flips the direction, which is the behaviour every
+  // file manager has and the one people try first.
+  if (query.value.sort === sort) {
+    query.value = { ...query.value, direction: query.value.direction === 'asc' ? 'desc' : 'asc' }
+    return
+  }
+  query.value = { ...query.value, sort, direction: sort === 'title' ? 'asc' : 'desc' }
+}
+
+function setFormat(format: FormatGroup | null): void {
+  query.value = { ...query.value, format: query.value.format === format ? null : format }
+}
+
+function setStatus(status: ReadStatus | null): void {
+  query.value = { ...query.value, status: query.value.status === status ? null : status }
+}
+
+function setGroup(group: string | null): void {
+  query.value = { ...query.value, group: query.value.group === group ? null : group }
+}
+
+const ORIGIN_LABELS: Record<OriginFilter, string> = {
+  file: t('library.origin.file'),
+  online: t('library.origin.online'),
+}
+
+/** How many entries of each kind exist, so the filter can show counts. */
+const originCounts = computed(() => {
+  let file = 0
+  let online = 0
+  for (const entry of store.entries) {
+    if (entry.kind === 'online') online += 1
+    else file += 1
+  }
+  return { file, online }
+})
+
+function setOrigin(origin: OriginFilter | null): void {
+  query.value = { ...query.value, origin: query.value.origin === origin ? null : origin }
+}
+
+function clearFilters(): void {
+  query.value = { ...DEFAULT_QUERY, sort: query.value.sort, direction: query.value.direction }
+}
+
+// --- Selection -------------------------------------------------------------
+
+const selecting = computed(() => selection.active)
+
+function toggleSelected(entry: Entry): void {
+  selection.toggle(entry.id)
+}
+
+function startDeleteSelection(): void {
+  // Everything is deletable, so no eligibility predicate.
+  selection.begin('delete')
+}
+
+async function confirmBatchDelete(): Promise<void> {
+  const chosen = selection.pick(actionable.value)
+  if (!chosen.length) return
+  await store.removeMany(chosen.map((entry) => entry.id))
+  selection.cancel()
+  batchConfirm.value = false
+}
+
+const batchConfirm = ref(false)
+
+function runExport(): void {
+  void exporter.run(actionable.value)
+}
+
+function onSelectToggle(entry: Entry): void {
+  // Export's own selection uses the same store, so this only fires in export
+  // mode; the delete mode uses the card/row checkbox through `toggleSelected`.
+  selection.toggle(entry.id)
+}
+
+// --- Rename ----------------------------------------------------------------
+
+const renameTarget = ref<Entry | null>(null)
+const renameDraft = ref('')
+
+function startRename(entry: Entry): void {
+  renameTarget.value = entry
+  renameDraft.value = displayTitle(entry)
+}
+
+async function commitRename(): Promise<void> {
+  const target = renameTarget.value
+  if (!target) return
+  const next = renameDraft.value.trim()
+  // An unchanged or cleared name both mean "no rename"; the backend normalizes
+  // blank to null, so passing it through is the undo.
+  await store.rename(target.id, next === target.title ? null : next)
+  renameTarget.value = null
+  renameDraft.value = ''
+}
+
+// --- Single removal --------------------------------------------------------
+
+const confirmRemove = ref<Entry | null>(null)
+
+async function confirmRemoval(): Promise<void> {
+  const target = confirmRemove.value
+  if (!target) return
+  await store.remove(target.id)
+  confirmRemove.value = null
 }
 
 /** Esc leaves selection mode without touching the shell's reader-exit path. */
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape' || !exporter.selecting) return
+  if (event.key !== 'Escape' || !selecting.value) return
   if (event.defaultPrevented) return
   event.preventDefault()
-  exporter.cancel()
+  if (batchConfirm.value) {
+    batchConfirm.value = false
+    return
+  }
+  selection.cancel()
 }
 
 async function handleImport(): Promise<void> {
@@ -69,6 +298,11 @@ async function handleImport(): Promise<void> {
     if (only) emit('open', only)
   }
 }
+
+// --- Drag and drop ---------------------------------------------------------
+
+const dragging = ref(false)
+const dragDepth = ref(0)
 
 function onDragEnter(event: DragEvent): void {
   event.preventDefault()
@@ -101,44 +335,12 @@ async function onDrop(event: DragEvent): Promise<void> {
   await store.importFromPaths(paths)
 }
 
-async function confirmRemoval(): Promise<void> {
-  const target = confirmRemove.value
-  if (!target) return
-  await store.remove(target.id)
-  confirmRemove.value = null
-}
-
 /** Progress shown inline on a row, so resuming is discoverable at a glance. */
 function progressLabel(entry: Entry): string | null {
-  const progress = entry.progress
-  if (!progress || typeof progress !== 'object') return null
-  const raw = progress as {
-    version?: number
-    ratio?: number
-    page?: number
-    time?: number
-    chapter?: number
-  }
-
-  // EPUB reports a chapter index. Checked before `ratio` because an EPUB
-  // payload may also carry the within-chapter ratio, and the chapter number
-  // is the more useful hint of "how far into the book" you are.
-  if (typeof raw.chapter === 'number' && raw.chapter > 0) {
-    return `第 ${raw.chapter + 1} 章`
-  }
-  if (typeof raw.ratio === 'number') {
-    const percent = Math.round(raw.ratio * 100)
-    return percent >= 1 ? t('entry.progress', { percent }) : null
-  }
-  if (typeof raw.page === 'number' && raw.page > 1) {
-    return `第 ${raw.page} 页`
-  }
-  if (typeof raw.time === 'number' && raw.time >= 5) {
-    // Audio has no total duration stored, so report elapsed time rather than a
-    // fake percentage.
-    return `听到 ${formatDuration(raw.time)}`
-  }
-  return null
+  // Interpreted by the format's own reader (`src/library/progress.ts`), not
+  // here: the payload shape belongs to the viewer that wrote it. Adding a format
+  // must not mean editing this view.
+  return readProgress(entry).label
 }
 
 /**
@@ -169,9 +371,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
   unlistenDrag?.()
   unlistenDrag = null
-  // Leaving the screen must not strand the export mode: the selection belongs
-  // to this view and would otherwise come back half-finished.
-  if (exporter.selecting) exporter.cancel()
+  // Leaving the screen must not strand the selection: it belongs to this view and
+  // would otherwise come back half-finished.
+  if (selection.active) selection.cancel()
 })
 </script>
 
@@ -186,21 +388,49 @@ onBeforeUnmount(() => {
     <header class="library-header">
       <div class="heading">
         <h1 class="title">{{ t('library.title') }}</h1>
-        <p v-if="!isEmpty" class="count">{{ t('library.count', { count: store.entries.length }) }}</p>
+        <p v-if="!isEmpty" class="count">
+          <template v-if="filtering">
+            {{ t('library.countFiltered', { shown: visible.length, total: store.entries.length }) }}
+          </template>
+          <template v-else>{{ t('library.count', { count: store.entries.length }) }}</template>
+        </p>
       </div>
 
-      <div v-if="!isEmpty && !exporter.selecting" class="header-actions">
+      <!-- What survives of the old dashboard: four numbers on one line. Charts and
+           distributions are gone because the filterable list below answers the same
+           questions with fewer places to disagree. -->
+      <dl v-if="!isEmpty" class="stats">
+        <div class="stat">
+          <dt class="stat-label">{{ t('library.stat.total') }}</dt>
+          <dd class="stat-value">{{ stats.total }}</dd>
+        </div>
+        <div class="stat">
+          <dt class="stat-label">{{ t('library.stat.reading') }}</dt>
+          <dd class="stat-value">{{ stats.reading }}</dd>
+        </div>
+        <div class="stat">
+          <dt class="stat-label">{{ t('library.stat.finished') }}</dt>
+          <dd class="stat-value">{{ stats.finished }}</dd>
+        </div>
+        <div class="stat">
+          <dt class="stat-label">{{ t('library.stat.storage') }}</dt>
+          <dd class="stat-value">{{ formatSize(stats.bytes) }}</dd>
+        </div>
+      </dl>
+
+      <div v-if="!isEmpty && !selecting" class="header-actions">
         <label class="search">
-          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" class="search-icon">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" class="search-icon">>
             <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" />
             <path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.4" />
           </svg>
           <input
-            v-model="query"
+            :value="query.text"
             class="search-input"
             type="search"
             :placeholder="t('library.search')"
             :aria-label="t('library.search')"
+            @input="query = { ...query, text: ($event.target as HTMLInputElement).value }"
           />
         </label>
         <button
@@ -211,34 +441,47 @@ onBeforeUnmount(() => {
         >
           {{ store.importing ? t('library.importing') : t('library.import') }}
         </button>
-        <ExportMenu :entries="exportable" />
+        <ExportMenu :entries="actionable" />
       </div>
 
       <!-- Selection mode replaces the header actions rather than adding to
            them: during a selection, importing or searching would be a
            distraction from the one thing in progress. -->
-      <div v-else-if="exporter.selecting" class="selection-actions">
+      <div v-else-if="selecting" class="selection-actions">
         <p class="selection-count">
-          {{ t('export.selected', { count: exporter.count, total: exportable.length }) }}
+          {{ t('export.selected', { count: selection.count, total: actionable.length }) }}
         </p>
-        <button class="btn btn--tertiary" type="button" @click="exporter.selectAll(exportable)">
+        <button class="btn btn--tertiary" type="button" @click="selection.selectAll(actionable)">
           {{ t('export.selectAll') }}
         </button>
         <button
           class="btn btn--tertiary"
           type="button"
-          :disabled="!exporter.count"
-          @click="exporter.clearSelection()"
+          :disabled="!selection.count"
+          @click="selection.clear()"
         >
           {{ t('export.clearSelection') }}
         </button>
-        <button class="btn btn--tertiary" type="button" @click="exporter.cancel()">
+        <button class="btn btn--tertiary" type="button" @click="selection.cancel()">
           {{ t('export.cancel') }}
         </button>
+
+        <!-- Export mode and delete mode share the selection; whichever purpose
+             is active decides which action the primary button runs. -->
         <button
+          v-if="selection.purpose === 'delete'"
+          class="btn btn--secondary"
+          type="button"
+          :disabled="!selection.count"
+          @click="batchConfirm = true"
+        >
+          {{ t('library.deleteSelected') }}
+        </button>
+        <button
+          v-else
           class="btn btn--primary"
           type="button"
-          :disabled="!exporter.count || exporter.running"
+          :disabled="!selection.count || exporter.running"
           @click="runExport"
         >
           {{
@@ -276,51 +519,241 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- Batch-removal outcome: a persistent strip, not a toast, for the same
+         reason import feedback is one — a toast disappears before it is read. -->
+    <div v-if="store.lastRemoval" class="error-wrap">
+      <div class="notice-strip">
+        <p class="notice-text">
+          {{
+            store.lastRemoval.failed
+              ? t('library.deletePartial', {
+                  removed: store.lastRemoval.removed,
+                  failed: store.lastRemoval.failed,
+                })
+              : t('library.deleteDone', { count: store.lastRemoval.removed })
+          }}
+        </p>
+        <button class="btn btn--tertiary" type="button" @click="store.clearRemoval()">
+          {{ t('common.close') }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Toolbar: sort, filter, layout. Hidden while selection is active so the
+         header has exactly one set of actions at a time. -->
+    <div v-if="!isEmpty && !selecting" class="toolbar">
+      <div class="toolbar-group">
+        <span class="toolbar-label">{{ t('library.sort') }}</span>
+        <button
+          v-for="key in SORT_KEYS"
+          :key="key"
+          class="chip"
+          :class="{ 'is-active': query.sort === key }"
+          type="button"
+          :aria-pressed="query.sort === key"
+          @click="setSort(key)"
+        >
+          {{ SORT_LABELS[key] }}
+          <svg
+            v-if="query.sort === key"
+            width="9"
+            height="9"
+            viewBox="0 0 10 10"
+            aria-hidden="true"
+            class="chip-arrow"
+            :class="{ 'is-asc': query.direction === 'asc' }"
+          >
+            <path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="toolbar-group">
+        <span class="toolbar-label">{{ t('library.filter') }}</span>
+        <button
+          v-for="format in FORMAT_GROUPS"
+          :key="format"
+          class="chip"
+          :class="{ 'is-active': query.format === format, 'is-empty': !formatCounts[format] }"
+          type="button"
+          :disabled="!formatCounts[format]"
+          :aria-pressed="query.format === format"
+          @click="setFormat(format)"
+        >
+          {{ FORMAT_LABELS[format] }}
+          <span class="chip-count">{{ formatCounts[format] }}</span>
+        </button>
+
+        <!-- Status is a second axis; it collapses into one select to keep the
+             toolbar from growing a row of chips per dimension. -->
+        <select
+          class="toolbar-select"
+          :value="query.status ?? ''"
+          :aria-label="t('library.filter.status')"
+          @change="setStatus((($event.target as HTMLSelectElement).value || null) as ReadStatus | null)"
+        >
+          <option value="">{{ t('library.filter.status') }}：{{ t('library.filter.all') }}</option>
+          <option v-for="status in READ_STATUSES" :key="status" :value="status">
+            {{ STATUS_LABELS[status] }}（{{ statusCounts[status] }}）
+          </option>
+        </select>
+
+        <select
+          v-if="groups.length"
+          class="toolbar-select"
+          :value="query.group ?? ''"
+          :aria-label="t('library.filter.group')"
+          @change="setGroup((($event.target as HTMLSelectElement).value || null))"
+        >
+          <option value="">{{ t('library.filter.group') }}：{{ t('library.filter.all') }}</option>
+          <option v-for="group in groups" :key="group" :value="group">{{ group }}</option>
+        </select>
+
+        <!-- Local files and source references live in one list; this is how you
+             narrow to one kind without moving to another page. Hidden when the
+             library holds only one kind, because then it can only do nothing. -->
+        <select
+          v-if="originCounts.file && originCounts.online"
+          class="toolbar-select"
+          :value="query.origin ?? ''"
+          :aria-label="t('library.filter.origin')"
+          @change="setOrigin((($event.target as HTMLSelectElement).value || null) as OriginFilter | null)"
+        >
+          <option value="">{{ t('library.filter.origin') }}：{{ t('library.filter.all') }}</option>
+          <option v-for="origin in ORIGIN_FILTERS" :key="origin" :value="origin">
+            {{ ORIGIN_LABELS[origin] }}（{{ originCounts[origin] }}）
+          </option>
+        </select>
+
+        <button
+          v-if="filtering"
+          class="btn btn--tertiary clear-filters"
+          type="button"
+          @click="clearFilters"
+        >
+          {{ t('library.filter.clear') }}
+        </button>
+      </div>
+
+      <div class="toolbar-group toolbar-end">
+        <button
+          class="btn btn--tertiary"
+          type="button"
+          @click="startDeleteSelection"
+        >
+          {{ t('library.select') }}
+        </button>
+
+        <!-- Two densities, not two designs: same data, same query, same store. -->
+        <div class="view-switch" role="group" :aria-label="t('library.view')">
+          <button
+            class="view-btn"
+            :class="{ 'is-active': view === 'list' }"
+            type="button"
+            :aria-pressed="view === 'list'"
+            :title="t('library.view.list')"
+            @click="view = 'list'"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M1 3h12M1 7h12M1 11h12" stroke="currentColor" stroke-width="1.4" />
+            </svg>
+          </button>
+          <button
+            class="view-btn"
+            :class="{ 'is-active': view === 'grid' }"
+            type="button"
+            :aria-pressed="view === 'grid'"
+            :title="t('library.view.grid')"
+            @click="view = 'grid'"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+              <rect x="1" y="1" width="5" height="5" fill="currentColor" />
+              <rect x="8" y="1" width="5" height="5" fill="currentColor" />
+              <rect x="1" y="8" width="5" height="5" fill="currentColor" />
+              <rect x="8" y="8" width="5" height="5" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="store.loading" class="loading">{{ t('common.loading') }}</div>
 
     <EmptyLibrary v-else-if="isEmpty" :importing="store.importing" @import="handleImport" />
 
-    <div v-else-if="searching && !filtered.length" class="no-results">
-      <p class="no-results-title">{{ t('library.searchEmpty', { query: query.trim() }) }}</p>
-      <button class="btn btn--tertiary" type="button" @click="query = ''">
-        {{ t('library.clearSearch') }}
+    <div v-else-if="!visible.length" class="no-results">
+      <p class="no-results-title">
+        {{ searching ? t('library.searchEmpty', { query: query.text.trim() }) : t('library.filteredEmpty') }}
+      </p>
+      <button v-if="filtering" class="btn btn--tertiary" type="button" @click="clearFilters">
+        {{ t('library.filter.clear') }}
       </button>
+    </div>
+
+    <!-- Grid: the same entries, recognised by shape instead of read by title. -->
+    <div v-else-if="view === 'grid'" class="cards">
+      <LibraryCard
+        v-for="entry in visible"
+        :key="entry.id"
+        :entry="entry"
+        :selecting="selecting"
+        :selected="selection.isSelected(entry.id)"
+        :eligible="selection.allows(entry)"
+        @open="emit('open', $event)"
+        @toggle="toggleSelected"
+      />
     </div>
 
     <ul v-else class="entries">
       <li
-        v-for="entry in filtered"
+        v-for="entry in visible"
         :key="entry.id"
         class="entry"
         :class="{
-          'is-selecting': exporter.selecting,
-          'is-selected': exporter.isSelected(entry.id),
-          'is-ineligible': exporter.selecting && !exporter.supports(entry),
+          'is-selecting': selecting,
+          'is-selected': selection.isSelected(entry.id),
+          'is-ineligible': selecting && !selection.allows(entry),
         }"
       >
         <!-- Selection is a checkbox, not a row click: opening a file and
              choosing a file are different intentions and must not share a
              target. -->
-        <label v-if="exporter.selecting" class="entry-check">
+        <label v-if="selecting" class="entry-check">
           <input
             type="checkbox"
-            :checked="exporter.isSelected(entry.id)"
-            :disabled="!exporter.supports(entry)"
-            :aria-label="entry.title"
+            :checked="selection.isSelected(entry.id)"
+            :disabled="!selection.allows(entry)"
+            :aria-label="displayTitle(entry)"
             @change="onSelectToggle(entry)"
           />
         </label>
 
         <button class="entry-open" type="button" @click="emit('open', entry)">
-          <span class="entry-ext">{{ extensionLabel(entry.extension) }}</span>
+          <!-- An online entry has no extension; the source name is the useful
+               label there, because two copies of one title differ by source. -->
+          <span class="entry-ext">
+            {{ entry.kind === 'online' ? sourceLabel(entry) : extensionLabel(entry.extension) }}
+          </span>
 
           <span class="entry-main">
-            <span class="entry-title">{{ entry.title }}</span>
+            <span class="entry-title">{{ displayTitle(entry) }}</span>
             <span class="entry-meta">
-              <span>{{ formatSize(entry.size) }}</span>
-              <span class="dot" aria-hidden="true">·</span>
-              <span v-if="entry.lastOpenedAt">{{ formatRelative(entry.lastOpenedAt) }}</span>
-              <span v-else>{{ formatRelative(entry.addedAt) }}</span>
+              <template v-if="entry.kind === 'online'">
+                <span>{{ onlineMeta(entry) }}</span>
+                <span class="dot" aria-hidden="true">·</span>
+                <span v-if="entry.lastOpenedAt">{{ formatRelative(entry.lastOpenedAt) }}</span>
+                <span v-else>{{ formatRelative(entry.addedAt) }}</span>
+                <template v-if="entry.reference?.invalid">
+                  <span class="dot" aria-hidden="true">·</span>
+                  <span class="entry-progress">{{ t('library.online.broken') }}</span>
+                </template>
+              </template>
+              <template v-else>
+                <span>{{ formatSize(entry.size) }}</span>
+                <span class="dot" aria-hidden="true">·</span>
+                <span v-if="entry.lastOpenedAt">{{ formatRelative(entry.lastOpenedAt) }}</span>
+                <span v-else>{{ formatRelative(entry.addedAt) }}</span>
+              </template>
               <template v-if="progressLabel(entry)">
                 <span class="dot" aria-hidden="true">·</span>
                 <span class="entry-progress">{{ progressLabel(entry) }}</span>
@@ -329,17 +762,21 @@ onBeforeUnmount(() => {
           </span>
         </button>
 
-        <!-- Removal hides during selection: a misclick there would delete a
-             file the person was about to export. -->
-        <button
-          v-if="!exporter.selecting"
-          class="entry-remove btn btn--danger"
-          type="button"
-          :aria-label="t('entry.remove')"
-          @click="confirmRemove = entry"
-        >
-          {{ t('entry.remove') }}
-        </button>
+        <!-- Removal and rename hide during selection: a misclick there would
+             delete or rename a file the person was about to act on. -->
+        <template v-if="!selecting">
+          <button class="entry-action btn btn--tertiary" type="button" @click="startRename(entry)">
+            {{ t('library.rename') }}
+          </button>
+          <button
+            class="entry-remove btn btn--danger"
+            type="button"
+            :aria-label="t('entry.remove')"
+            @click="confirmRemove = entry"
+          >
+            {{ t('entry.remove') }}
+          </button>
+        </template>
       </li>
     </ul>
 
@@ -354,7 +791,7 @@ onBeforeUnmount(() => {
     <!-- Removal confirmation: a small inline modal, not a scary dialog. -->
     <div v-if="confirmRemove" class="confirm-backdrop" @click.self="confirmRemove = null">
       <div class="confirm" role="dialog" aria-modal="true">
-        <h2 class="confirm-title">{{ t('entry.removeConfirm', { title: confirmRemove.title }) }}</h2>
+        <h2 class="confirm-title">{{ t('entry.removeConfirm', { title: displayTitle(confirmRemove) }) }}</h2>
         <p class="confirm-body">{{ t('entry.removeConfirmBody') }}</p>
         <div class="confirm-actions">
           <button class="btn btn--tertiary" type="button" @click="confirmRemove = null">
@@ -362,6 +799,51 @@ onBeforeUnmount(() => {
           </button>
           <button class="btn btn--secondary" type="button" @click="confirmRemoval">
             {{ t('entry.removeAction') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Batch removal confirmation. The count is spelled out because that is the
+         only thing the person can still check at this point. -->
+    <div v-if="batchConfirm" class="confirm-backdrop" @click.self="batchConfirm = false">
+      <div class="confirm" role="dialog" aria-modal="true">
+        <h2 class="confirm-title">{{ t('library.deleteConfirm', { count: selection.count }) }}</h2>
+        <p class="confirm-body">{{ t('library.deleteConfirmBody') }}</p>
+        <div class="confirm-actions">
+          <button class="btn btn--tertiary" type="button" @click="batchConfirm = false">
+            {{ t('entry.removeCancel') }}
+          </button>
+          <button class="btn btn--secondary" type="button" @click="confirmBatchDelete">
+            {{ t('entry.removeAction') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rename. Clearing the field is the undo, which the hint says outright so
+         nobody wonders whether the original name is lost. -->
+    <div v-if="renameTarget" class="confirm-backdrop" @click.self="renameTarget = null">
+      <div class="confirm" role="dialog" aria-modal="true">
+        <h2 class="confirm-title">
+          {{ t('library.renameTitle', { title: displayTitle(renameTarget) }) }}
+        </h2>
+        <label class="rename-field">
+          <input
+            v-model="renameDraft"
+            class="rename-input"
+            type="text"
+            :placeholder="t('library.renamePlaceholder')"
+            @keydown.enter="commitRename"
+          />
+        </label>
+        <p class="confirm-body">{{ t('library.renameHint') }}</p>
+        <div class="confirm-actions">
+          <button class="btn btn--tertiary" type="button" @click="renameTarget = null">
+            {{ t('entry.removeCancel') }}
+          </button>
+          <button class="btn btn--secondary" type="button" @click="commitRename">
+            {{ t('library.renameSave') }}
           </button>
         </div>
       </div>
@@ -402,6 +884,34 @@ onBeforeUnmount(() => {
   margin-top: var(--space-2);
   font-size: var(--text-sm);
   color: var(--ink-tertiary);
+}
+
+/* Four numbers on one line, aligned with the heading's baseline. Not a card, not a
+   panel: a definition list with spacing doing the dividing, per the design system. */
+.stats {
+  display: flex;
+  gap: var(--space-6);
+  margin: 0;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.stat-label {
+  font-size: var(--text-xs);
+  color: var(--ink-tertiary);
+  letter-spacing: 0.02em;
+}
+
+.stat-value {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-strong);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-primary);
 }
 
 .header-actions {
@@ -736,5 +1246,193 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-5);
+}
+/* --- Toolbar ------------------------------------------------------------
+   One row that holds sorting, filtering and the layout switch. Its height is
+   fixed so toggling a filter or the view never shifts the list below it. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-5);
+  max-width: var(--shell-max);
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 var(--content-pad) var(--space-3);
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Pushed to the right edge: destructive mode entry and the view switch are not
+   part of the filter story, so they sit away from it. */
+.toolbar-end {
+  margin-left: auto;
+}
+
+.toolbar-label {
+  font-size: var(--text-xs);
+  color: var(--ink-tertiary);
+  margin-right: var(--space-1);
+}
+
+/* A chip is a toggle, so its active state must be legible without hue: it goes
+   to full ink strength with a solid background step. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-sm);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  color: var(--ink-secondary);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.chip:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--ink-primary);
+}
+
+.chip.is-active {
+  background: var(--surface-ink);
+  color: var(--ink-inverse);
+  font-weight: var(--weight-medium);
+}
+
+.chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chip-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+}
+
+.chip-arrow {
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.chip-arrow.is-asc {
+  transform: rotate(180deg);
+}
+
+.toolbar-select {
+  height: var(--control-sm);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
+  font-size: var(--text-xs);
+  color: var(--ink-secondary);
+}
+
+.clear-filters {
+  font-size: var(--text-xs);
+}
+
+/* --- View switch --------------------------------------------------------- */
+.view-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+
+.view-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-tertiary);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.view-btn:hover {
+  color: var(--ink-secondary);
+}
+
+.view-btn.is-active {
+  background: var(--surface-raised);
+  color: var(--ink-primary);
+  box-shadow: var(--shadow-e1);
+}
+
+/* --- Card grid -----------------------------------------------------------
+   Column count comes from a minimum readable width, so resizing adds a column
+   instead of squeezing every card. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width), 1fr));
+  gap: var(--grid-gap-roomy) var(--grid-gap);
+  max-width: var(--shell-max);
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 var(--content-pad) var(--space-9);
+  align-content: start;
+}
+
+/* --- Row actions ---------------------------------------------------------
+   Rename joins remove in the hover-only group: neither is the row's job. */
+.entry-action {
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.entry:hover .entry-action,
+.entry-action:focus-visible {
+  opacity: 1;
+}
+
+/* --- Notice strip (batch removal outcome) -------------------------------- */
+.notice-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+
+.notice-text {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--ink-secondary);
+}
+
+/* --- Rename dialog ------------------------------------------------------- */
+.rename-field {
+  display: block;
+  margin-top: var(--space-4);
+}
+
+.rename-input {
+  width: 100%;
+  height: var(--control-md);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-page);
+  font-size: var(--text-sm);
+  color: var(--ink-primary);
+}
+
+.rename-input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 </style>

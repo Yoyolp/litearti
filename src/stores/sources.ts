@@ -73,8 +73,8 @@ export const useSourcesStore = defineStore('sources', () => {
         lastIssues.value = parsed.issues
         const first = parsed.issues[0]
         error.value = first
-          ? `有 ${parsed.issues.length} 个书源字段不合法，已跳过：${first.path} ${first.message}`
-          : '书源文件不合法，已跳过'
+          ? `有 ${parsed.issues.length} 个源字段不合法，已跳过：${first.path} ${first.message}`
+          : '源文件不合法，已跳过'
       }
       // The progress file is a plain map; coerce rather than trust its shape,
       // since it is written by us but can be hand-edited.
@@ -156,6 +156,18 @@ export const useSourcesStore = defineStore('sources', () => {
     }
     progress.value = next
     await persist()
+
+    // Library entries that referenced this source are marked invalid, not deleted.
+    // They are the person's record of what they added; a re-match is attempted when
+    // one is opened, not now, because deleting a source should not fire a batch of
+    // requests at other people's sites.
+    try {
+      await api.invalidateSource(id)
+      await refreshLibraryReferences(id)
+    } catch {
+      // Best-effort. A stale `invalid` flag only costs a failed open, which the
+      // entry reports honestly anyway.
+    }
   }
 
   async function setEnabled(id: string, value: boolean): Promise<void> {
@@ -163,6 +175,36 @@ export const useSourcesStore = defineStore('sources', () => {
     if (!source) return
     source.enabled = value
     await persist()
+    // Disabling is the same situation as deleting, from a library entry's point of
+    // view: the reference can no longer be followed.
+    if (!value) {
+      try {
+        await api.invalidateSource(id)
+        await refreshLibraryReferences(id)
+      } catch {
+        // See above.
+      }
+    }
+  }
+
+  /**
+   * Bring the library's in-memory entries in step after a source changed.
+   *
+   * Loaded lazily rather than imported at module top: the library store is a Pinia
+   * store, and importing it here would create a cycle the moment the library store
+   * ever needs anything from this one. `await import` runs once and is cached.
+   *
+   * A full reload rather than a field-level patch because the backend already did
+   * the authoritative write; re-reading means the two cannot drift on what the
+   * `invalid` flag currently is.
+   */
+  async function refreshLibraryReferences(_sourceId: string): Promise<void> {
+    try {
+      const { useLibraryStore } = await import('./library')
+      await useLibraryStore().load()
+    } catch {
+      // The library will catch up on the next start.
+    }
   }
 
   async function persist(): Promise<void> {

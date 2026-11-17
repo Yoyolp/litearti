@@ -2,9 +2,12 @@
 /**
  * Reading one chapter of a source item.
  *
- * Typography deliberately matches `TextReader.vue`: same measure cap, same line
- * height, same 13–28px size control. A person switching between a local TXT and
- * a source chapter should not have to re-learn how the text sits on the page.
+ * Typography comes from `library/readingPrefs.ts`, the same module the local-file
+ * reader uses. Both readers used to carry their own idea of what text should look
+ * like — this one had a component-local size that reset on navigation, the other had
+ * none — and a Settings page showing a font size would have been a lie if either
+ * still kept a private copy. So the controls below write to the shared preference
+ * rather than to local state.
  *
  * Progress is stored per (source, chapter url), separate from library progress,
  * because these URLs can disappear — unlike an imported file, which is ours.
@@ -15,6 +18,12 @@ import { useSourcesStore } from '@/stores/sources'
 import { clamp } from '@/utils/format'
 import { SourceEngine, type SourceChapter } from '@/sources/engine'
 import { SelectorError } from '@/sources/selector'
+import {
+  FONT_SIZE_RANGE,
+  reading,
+  readingStyle,
+  updateReading,
+} from '@/library/readingPrefs'
 
 const props = defineProps<{
   sourceId: string
@@ -32,7 +41,6 @@ const engine = shallowRef<SourceEngine | null>(null)
 const text = ref('')
 const loading = ref(true)
 const error = ref<string | null>(null)
-const fontSize = ref(17)
 const currentIndex = ref(0)
 
 const source = computed(() => store.byId(props.sourceId))
@@ -67,7 +75,7 @@ async function load(): Promise<void> {
   text.value = ''
   try {
     const active = ensureEngine()
-    if (!active) throw new Error('书源不存在')
+    if (!active) throw new Error('源不存在')
     text.value = await active.chapter(currentChapter.value.url)
 
     // Restore the saved ratio for this exact chapter, if any.
@@ -118,8 +126,9 @@ async function goTo(index: number): Promise<void> {
   await load()
 }
 
+/** The size control writes to the shared preference, not to local state. */
 function changeFontSize(delta: number): void {
-  fontSize.value = clamp(fontSize.value + delta, 13, 28)
+  updateReading({ fontSize: reading.value.fontSize + delta })
 }
 
 onMounted(() => {
@@ -170,17 +179,17 @@ watch(
             class="btn btn--tertiary"
             type="button"
             :aria-label="t('txt.fontSmaller')"
-            :disabled="fontSize <= 13"
+            :disabled="reading.fontSize <= FONT_SIZE_RANGE.min"
             @click="changeFontSize(-1)"
           >
             −
           </button>
-          <span class="font-value">{{ fontSize }}</span>
+          <span class="font-value">{{ reading.fontSize }}</span>
           <button
             class="btn btn--tertiary"
             type="button"
             :aria-label="t('txt.fontLarger')"
-            :disabled="fontSize >= 28"
+            :disabled="reading.fontSize >= FONT_SIZE_RANGE.max"
             @click="changeFontSize(1)"
           >
             +
@@ -224,7 +233,7 @@ watch(
         <p class="state-body">{{ t('source.emptyChapterBody') }}</p>
       </div>
 
-      <article v-else class="prose" :style="{ fontSize: `${fontSize}px` }">
+      <article v-else class="prose" :style="readingStyle()">
         <template v-for="paragraph in paragraphs" :key="paragraph.key">
           <p v-if="!paragraph.blank" class="paragraph">{{ paragraph.text }}</p>
           <div v-else class="paragraph-gap" aria-hidden="true" />

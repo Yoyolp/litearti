@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "appi-kuwo-cn",
+  "name": "酷我小说",
+  "version": "1.0.0",
+  "homepage": "http://appi.kuwo.cn",
+  "type": "novel",
+  "enabled": true,
+  "request": {
+    "headers": {
+      "Accept": "*/*",
+      "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 8.0.0)"
+    },
+    "timeoutMs": 20000,
+    "delayMs": 500
+  },
+  "search": {
+    "url": "http://appi.kuwo.cn/novels/api/book/search?keyword={{keyword}}&pi={{page}}&ps=30",
+    "method": "GET",
+    "list": "$.data",
+    "fields": {
+      "title": "$.title",
+      "author": "$.author_name",
+      "cover": "$.cover_url",
+      "intro": "$.intro",
+      "detailUrl": "@js:'/novels/api/book/'+String(input.book_id)"
+    }
+  },
+  "detail": {
+    "list": "$.data",
+    "fields": {
+      "title": "$.chapter_title",
+      "url": "@js:'/novels/api/book/'+String(input.book_id)+'/chapters/'+String(input.chapter_id)"
+    },
+    "tocUrl": "@js:'/novels/api/book/'+String(input.data.book_id)+'/chapters?paging=0'",
+    "title": "$.data.title",
+    "author": "$.data.author_name",
+    "intro": "$.data.intro",
+    "cover": "$.data.cover_url"
+  },
+  "chapter": {
+    "content": "$.data.content"
+  }
+}

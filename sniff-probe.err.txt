@@ -1,0 +1,8 @@
+SNIFF-CMD: entered, page_url=http://127.0.0.1:51685/play/1
+SNIFF-CMD: sniff returned 3 sightings, 1 cookies
+SNIFF-CMD: cookie probe_session=<6 chars> domain=127.0.0.1
+SNIFF-CMD: persisted cookie for 127.0.0.1 (sniff-probe-source)
+SNIFF-CMD: entered, page_url=http://127.0.0.1:1/nope
+SNIFF-CMD: sniff returned 1 sightings, 1 cookies
+SNIFF-CMD: cookie probe_session=<6 chars> domain=127.0.0.1
+SNIFF-CMD: persisted cookie for 127.0.0.1 (sniff-probe-source)

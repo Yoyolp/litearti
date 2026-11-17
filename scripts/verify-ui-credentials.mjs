@@ -134,7 +134,7 @@ async function main() {
   }
 
   await session.reload()
-  await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')][2].click()`)
+  await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')].find((n) => n.textContent.trim() === '源')?.click()`)
   await sleep(1500)
 
   console.log('login affordance appears only for sources that declare auth')
@@ -204,7 +204,7 @@ async function main() {
   console.log('the UI reflects a stored login')
   {
     await session.reload()
-    await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')][2].click()`)
+    await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')].find((n) => n.textContent.trim() === '源')?.click()`)
     const state = await waitFor(
       session,
       `(() => {
@@ -245,7 +245,7 @@ async function main() {
     check('credential is gone', !(after ?? []).includes('auth-test'), JSON.stringify(after))
 
     await session.reload()
-    await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')][2].click()`)
+    await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')].find((n) => n.textContent.trim() === '源')?.click()`)
     const state = await waitFor(
       session,
       `(() => {

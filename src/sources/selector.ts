@@ -342,3 +342,199 @@ export function selectFromElement(element: Element, selector: string): string | 
   if (attr) return target.getAttribute(attr)?.trim() ?? null
   return elementText(target) || null
 }
+
+// --- XPath ----------------------------------------------------------------
+
+/**
+ * XPath attribute extraction.
+ *
+ * Kazumi's rules say `searchResult: "//h3/a"` and take the element's `href`
+ * internally. litearti needs that to be *expressible*, but the CSS-style
+ * `@attr` suffix cannot work here: `@` is already XPath syntax for an attribute
+ * predicate, so `//div[@class="x"]` would have its last `@` mistaken for a
+ * suffix and split into `//div[` + `class="x"]`.
+ *
+ * So XPath uses a function-style marker that no real expression contains:
+ *
+ *     xpath://a[@class="title"]/::attr(href)
+ *
+ * The `::attr(name)` is stripped before evaluation, and the attribute is read
+ * from each matched node. `::attr()` with an empty name means "the node's own
+ * text", which is what a bare `xpath:` already does — it exists only so a rule
+ * can be explicit about it.
+ */
+const XPATH_ATTR = '::attr('
+
+/**
+ * Split `.../::attr(href)` into the expression and the attribute name.
+ *
+ * Tolerates a doubled slash (`a//::attr(href)`) and trims a trailing slash off
+ * the expression. Both are what a person writes when they are thinking of the
+ * `//` step separator rather than of the marker, and both would otherwise become
+ * a trailing `/` that XPath rejects — an error that points at the expression, not
+ * at the spelling, and so is hard to diagnose.
+ */
+function splitXPathAttribute(body: string): { expression: string; attr: string | null } {
+  // `lastIndexOf` because an expression could theoretically contain the token in
+  // a string literal; the real marker is always at the end.
+  const at = body.lastIndexOf(XPATH_ATTR)
+  if (at < 0 || !body.endsWith(')')) return { expression: body.trim(), attr: null }
+  const attr = body.slice(at + XPATH_ATTR.length, -1).trim()
+  const expression = body.slice(0, at).replace(/\/+$/, '').trim()
+  return { expression, attr }
+}
+
+/**
+ * Evaluate an XPath against a document or an element.
+ *
+ * Uses the browser's own engine, so every axis, predicate and function works —
+ * `following-sibling::`, `contains()`, `position()`, `text()` all included. That
+ * is a real advantage over Kazumi's hand-rolled support (its README admits only
+ * `//`-prefixed selectors work).
+ *
+ * `base` is the context node, which is how a per-item field selector runs inside
+ * one list row. A relative expression (`./li/a`, `ul/li`) must resolve against
+ * that node rather than the document, so the context is threaded through.
+ */
+function evaluateXPath(base: Node, expression: string): Node[] {
+  const doc = base.nodeType === 9 ? (base as Document) : base.ownerDocument
+  if (!doc) throw new SelectorError('XPath 需要一个文档作为上下文')
+  const rebased = rebaseOntoContext(expression, base)
+  try {
+    const result = doc.evaluate(
+      rebased,
+      base,
+      null,
+      XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+      null,
+    )
+    const nodes: Node[] = []
+    for (let i = 0; i < result.snapshotLength; i += 1) {
+      const node = result.snapshotItem(i)
+      if (node) nodes.push(node)
+    }
+    return nodes
+  } catch (error) {
+    throw new SelectorError(
+      `XPath 语法错误：${expression}${error instanceof Error ? `（${error.message}）` : ''}`,
+    )
+  }
+}
+
+/** Text of a node, preferring an element's readable content. */
+function nodeText(node: Node): string {
+  return (node.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Rebase an absolute expression onto a context element.
+ *
+ * This is the one place XPath's own semantics fight what a rule author means.
+ *
+ * `//ul/li/a` is **absolute**: it searches from the document root no matter what
+ * context node is passed. So a per-road episode selector written that way returns
+ * every episode on the page for *each* road — three roads with 12, 12, 12
+ * episodes instead of 12, 8, 4. That is a silent, plausible-looking wrong answer,
+ * which is the worst kind.
+ *
+ * Kazumi's rules are written with exactly this expectation: `chapterResult` is
+ * evaluated *inside* each road element, and every community rule writes it as
+ * `//li/a`. So when the context is an element and the expression starts with
+ * `//`, it is treated as `.//` — "descendants of this element". A genuinely
+ * document-wide query from inside an element is not something a source rule
+ * needs, and if it ever does, `xpath:` on the document is the way to say it.
+ *
+ * `self::*` and `.` are unaffected: they already mean "this node".
+ */
+function rebaseOntoContext(expression: string, context: Node): string {
+  if (context.nodeType === 9) return expression
+  if (expression === 'self::*' || expression === '.') return expression
+  if (expression.startsWith('//')) return `.${expression}`
+  return expression
+}
+
+/**
+ * Evaluate an `xpath:` value against a whole HTML document.
+ *
+ * A bare `xpath:` means "the document body's text", matching the `css:` rule.
+ */
+export function selectXPath(html: string, selector: string, all = false): SelectResult {
+  const body = selector.startsWith('xpath:') ? selector.slice('xpath:'.length).trim() : selector
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+
+  if (!body) {
+    const text = doc.body ? nodeText(doc.body) : ''
+    return text ? [text] : []
+  }
+
+  const { expression, attr } = splitXPathAttribute(body)
+  const nodes = evaluateXPath(doc, expression || '.')
+  const picked = all ? nodes : nodes.slice(0, 1)
+
+  const out: SelectResult = []
+  for (const node of picked) {
+    if (attr !== null) {
+      const element = node.nodeType === 1 ? (node as Element) : null
+      const value = element?.getAttribute(attr)?.trim() ?? ''
+      if (value) out.push(value)
+      continue
+    }
+    const text = nodeText(node)
+    if (text) out.push(text)
+  }
+  return out
+}
+
+/**
+ * Evaluate an `xpath:` value returning the matched nodes.
+ *
+ * Needed by the list step, which must keep each row's element so per-field
+ * selectors can run inside it — the same reason `selectCssElements` exists.
+ */
+export function selectXPathNodes(html: string, selector: string): Node[] {
+  const body = selector.startsWith('xpath:') ? selector.slice('xpath:'.length).trim() : selector
+  if (!body) throw new SelectorError('XPath 选择器为空')
+  const { expression } = splitXPathAttribute(body)
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  return evaluateXPath(doc, expression || '.')
+}
+
+/**
+ * Evaluate an `xpath:` expression against an arbitrary context node.
+ *
+ * The road step needs this: the roads themselves are matched against the detail
+ * document, then each episode list is matched *inside* one road element. Passing
+ * the node in keeps the context explicit instead of re-parsing the page per road.
+ */
+export function selectXPathNodesIn(base: Node, expression: string): Node[] {
+  return evaluateXPath(base, expression)
+}
+
+/**
+ * Run an `xpath:` field selector against one element's subtree.
+ *
+ * Relative expressions resolve against the element, which is what makes
+ * `xpath: /self::*` and `xpath: .//li/a` behave the way a rule author expects.
+ * `self::*` in particular is how a rule says "this matched element is the
+ * value", the XPath equivalent of an empty `css:`.
+ */
+export function selectXPathFromElement(element: Element, selector: string): string | null {
+  const body = selector.startsWith('xpath:') ? selector.slice('xpath:'.length).trim() : selector
+  const { expression, attr } = splitXPathAttribute(body)
+
+  // A bare `xpath:` means the element itself, matching the `css:` convention.
+  const nodes = expression ? evaluateXPath(element, expression) : [element]
+  const node = nodes[0]
+  if (!node) return null
+
+  if (attr !== null) {
+    const target = node.nodeType === 1 ? (node as Element) : null
+    return target?.getAttribute(attr)?.trim() ?? null
+  }
+
+  const text = nodeText(node)
+  return text || null
+}
+
+
+

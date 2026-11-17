@@ -11,6 +11,8 @@
 
 import { defineAsyncComponent } from 'vue'
 import { registerViewer } from './registry'
+import { registerProgressReader } from '@/library/progress'
+import { registerBuiltinProgressReaders } from '@/library/builtinProgress'
 
 const TextReader = defineAsyncComponent(() => import('./TextReader.vue'))
 const PdfReader = defineAsyncComponent(() => import('./PdfReader.vue'))
@@ -23,6 +25,11 @@ let registered = false
 export function registerBuiltinViewers(): void {
   if (registered) return
   registered = true
+
+  // Progress readers travel with the viewers: a format that plugs in here also
+  // plugs in how its resume state is read, so the library never grows a branch
+  // per format.
+  registerBuiltinProgressReaders(registerProgressReader)
 
   registerViewer({
     id: 'text',

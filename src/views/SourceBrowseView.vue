@@ -1,15 +1,25 @@
 <script setup lang="ts">
 /**
- * Browsing one source: pick a source, search, get a grid of cards.
+ * Browsing one source: search, get a grid of cards.
+ *
+ * Two things changed from the first version, both about not making people repeat
+ * themselves:
+ *
+ *   - **switching source keeps the keyword.** It used to send you back to the
+ *     list to pick another source and then retype the query. Now the picker sits
+ *     in the header and switching re-runs the search.
+ *   - **results can be filtered in place.** A site can return a hundred rows, and
+ *     asking the network again to narrow that down is both slow and rude. The
+ *     filter is purely local.
  *
  * The engine and its sandbox live here, mounted once per source, because a
- * sandbox iframe per card would be absurd. Disposal is explicit: the sandbox
- * must be torn down when leaving, or its frame leaks for the session.
+ * sandbox iframe per card would be absurd. Disposal is explicit: the sandbox must
+ * be torn down when leaving, or its frame leaks for the session.
  */
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useSourcesStore } from '@/stores/sources'
 import { t } from '@/i18n'
-import { SourceEngine, type SourceItem } from '@/sources/engine'
+import { SourceEngine, type SourceItem, type Diagnosis } from '@/sources/engine'
 import { SelectorError } from '@/sources/selector'
 import { openExternal } from '@/api/library'
 import SourceCard from '@/components/SourceCard.vue'
@@ -27,13 +37,25 @@ const items = ref<SourceItem[]>([])
 const searching = ref(false)
 const error = ref<string | null>(null)
 const searched = ref(false)
+const diagnoses = ref<Diagnosis[]>([])
+/** Local filter over already-loaded results. Never triggers a request. */
+const filterText = ref('')
 /** Mount point for the sandbox iframe. */
 const sandboxMount = ref<HTMLElement | null>(null)
 const engine = shallowRef<SourceEngine | null>(null)
 
 const source = computed(() => store.byId(props.sourceId))
-
 const enabledSources = computed(() => store.enabled)
+
+/** Results after the local filter. */
+const visible = computed(() => {
+  const term = filterText.value.trim().toLowerCase()
+  if (!term) return items.value
+  return items.value.filter((item) => {
+    const haystack = [item.title, item.author ?? '', item.intro ?? ''].join('\n').toLowerCase()
+    return haystack.includes(term)
+  })
+})
 
 function disposeEngine(): void {
   engine.value?.dispose?.()
@@ -65,7 +87,7 @@ function looksLikeUrl(input: string): boolean {
  */
 async function loadFromUrl(url: string): Promise<void> {
   const active = ensureEngine()
-  if (!active) throw new Error('书源不存在')
+  if (!active) throw new Error('源不存在')
   const item = await active.itemFromUrl(url)
   items.value = [item]
   searched.value = true
@@ -92,15 +114,19 @@ async function search(): Promise<void> {
 
   searching.value = true
   error.value = null
+  diagnoses.value = []
+  filterText.value = ''
   coverGeneration += 1
   try {
     const active = ensureEngine()
-    if (!active) throw new Error('书源不存在')
+    if (!active) throw new Error('源不存在')
 
     if (looksLikeUrl(q)) {
       await loadFromUrl(q)
     } else {
-      items.value = await active.search(q)
+      const result = await active.searchWithDiagnoses(q)
+      items.value = result.items
+      diagnoses.value = result.diagnoses
       searched.value = true
       void fillCovers(active, coverGeneration)
     }
@@ -111,6 +137,35 @@ async function search(): Promise<void> {
     searching.value = false
   }
 }
+
+/**
+ * Switching source re-runs the current keyword.
+ *
+ * This is the whole point of the picker in the header: comparing two sources for
+ * the same book should cost one click, not "back, pick, retype, search".
+ */
+function switchSource(nextId: string): void {
+  if (nextId === props.sourceId) return
+  coverGeneration += 1
+  disposeEngine()
+  items.value = []
+  searched.value = false
+  error.value = null
+  diagnoses.value = []
+  filterText.value = ''
+  emit('switchSource', nextId)
+  // The parent re-mounts this view with a new sourceId, so the re-search happens
+  // in the watcher below rather than here.
+}
+
+// When the source changes under us with a keyword already typed, search again.
+watch(
+  () => props.sourceId,
+  () => {
+    if (!keyword.value.trim()) return
+    void search()
+  },
+)
 
 /**
  * Fill in missing covers in the background.
@@ -166,19 +221,6 @@ function describe(cause: unknown): string {
   return message
 }
 
-// Switching source invalidates the engine: the definition changed, and a stale
-// sandbox would keep the old source's context alive.
-watch(
-  () => props.sourceId,
-  () => {
-    coverGeneration += 1
-    disposeEngine()
-    items.value = []
-    searched.value = false
-    error.value = null
-  },
-)
-
 onBeforeUnmount(() => {
   // Stop any in-flight cover fetches before the engine goes away.
   coverGeneration += 1
@@ -197,12 +239,14 @@ onBeforeUnmount(() => {
           {{ t('source.backToSources') }}
         </button>
 
+        <!-- Switching here, not by going back to the list: the keyword survives,
+             so comparing two sources is one click. -->
         <label v-if="enabledSources.length > 1" class="source-picker">
           <select
             class="source-select"
             :value="sourceId"
             :aria-label="t('source.pick')"
-            @change="emit('switchSource', ($event.target as HTMLSelectElement).value)"
+            @change="switchSource(($event.target as HTMLSelectElement).value)"
           >
             <option v-for="option in enabledSources" :key="option.id" :value="option.id">
               {{ option.name }}
@@ -251,8 +295,24 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- Explains the URL affordance without a tooltip nobody reads. -->
-      <p class="search-hint">{{ t('source.searchHintUrl') }}</p>
+      <!-- Only shown once there is something to narrow: a filter over an empty
+           list is a control that cannot do anything. -->
+      <div v-if="searched && items.length" class="filter-row">
+        <label class="filter">
+          <input
+            v-model="filterText"
+            class="filter-input"
+            type="search"
+            :placeholder="t('source.editor.testerHint')"
+            :aria-label="t('library.filter')"
+          />
+        </label>
+        <span class="filter-count">
+          {{ visible.length }} / {{ items.length }}
+        </span>
+      </div>
+
+      <p v-else class="search-hint">{{ t('source.searchHintUrl') }}</p>
     </header>
 
     <!-- Sandbox host: zero-sized, never visible. The engine appends its iframe
@@ -268,6 +328,20 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- Diagnoses: a partial result is still a result, but a count that looks
+         low deserves an explanation. -->
+    <div v-if="diagnoses.length" class="error-wrap">
+      <div class="diag-strip">
+        <p class="diag-text">{{ t('source.diagnosesCount', { count: diagnoses.length }) }}</p>
+        <ul class="diag-list">
+          <li v-for="d in diagnoses.slice(0, 3)" :key="`${d.stage}-${d.index}`" class="diag-row">
+            {{ t('source.diagnoseRow', { index: d.index, reason: d.reason }) }}
+            <span v-if="d.excerpt" class="diag-excerpt">— {{ d.excerpt }}</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+
     <div v-if="searching" class="state">{{ t('source.searching') }}</div>
 
     <div v-else-if="!searched" class="state">
@@ -280,8 +354,15 @@ onBeforeUnmount(() => {
       <p class="state-body">{{ t('source.noResultsBody', { keyword }) }}</p>
     </div>
 
+    <div v-else-if="!visible.length" class="state">
+      <p class="state-title">{{ t('library.searchEmpty', { query: filterText.trim() }) }}</p>
+      <button class="btn btn--tertiary" type="button" @click="filterText = ''">
+        {{ t('library.clearSearch') }}
+      </button>
+    </div>
+
     <div v-else class="grid">
-      <SourceCard v-for="item in items" :key="item.detailUrl" :item="item" @open="emit('open', $event)" />
+      <SourceCard v-for="item in visible" :key="item.detailUrl" :item="item" @open="emit('open', $event)" />
     </div>
   </div>
 </template>
@@ -303,18 +384,15 @@ onBeforeUnmount(() => {
   padding: var(--space-5) var(--content-pad) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .head-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-3);
 }
 
-/* The "visit site" button sits at the far right of the head row, away from the
-   back button, so a misclick cannot navigate away from the source. */
 .open-site {
   margin-left: auto;
   gap: var(--space-2);
@@ -380,6 +458,46 @@ onBeforeUnmount(() => {
   color: var(--ink-primary);
 }
 
+/* --- Local filter ------------------------------------------------------- */
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.filter {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: var(--control-sm);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.filter:focus-within {
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.filter-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: var(--text-xs);
+  color: var(--ink-primary);
+}
+
+.filter-count {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--ink-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Zero-sized host: the iframe inside must not affect layout. */
 .sandbox-host {
   position: absolute;
@@ -393,8 +511,8 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: var(--space-5) var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width), 1fr));
+  gap: var(--grid-gap-roomy) var(--grid-gap);
   max-width: var(--shell-max);
   width: 100%;
   margin: 0 auto;
@@ -446,5 +564,34 @@ onBeforeUnmount(() => {
   flex: 1;
   font-size: var(--text-sm);
   color: var(--tone-danger);
+}
+
+.diag-strip {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--tone-warning-surface);
+}
+
+.diag-text {
+  font-size: var(--text-xs);
+  color: var(--tone-warning);
+}
+
+.diag-list {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+}
+
+.diag-row {
+  font-size: var(--text-xs);
+  color: var(--ink-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-excerpt {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
 }
 </style>

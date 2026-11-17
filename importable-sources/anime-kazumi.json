@@ -1,0 +1,146 @@
+[
+  {
+    "_comment": "由 Kazumi 社区规则 MXdm v2.4 (Predidit/KazumiRules) 转换而来。这是唯一一条能直接取到 m3u8 直链的社区源，因此是流代理与播放链路最好的测试对象。播放页内联了 `url: 'https://.../index.m3u8'`，用 xpath 取不到，所以 playback 用 regex 从源码里捞。",
+    "schemaVersion": 1,
+    "id": "kazumi-mxdm",
+    "name": "MXdm（Kazumi 社区）",
+    "version": "2.4",
+    "homepage": "https://www.dcc3.com",
+    "language": "zh",
+    "type": "video",
+    "enabled": true,
+    "request": {
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.dcc3.com/"
+      },
+      "timeoutMs": 20000,
+      "delayMs": 400
+    },
+    "search": {
+      "url": "https://www.dcc3.com/search/?wd={{keyword}}",
+      "method": "GET",
+      "list": "xpath://div[contains(@class,'search')]/ul/li",
+      "fields": {
+        "title": "xpath://h3/a",
+        "detailUrl": "xpath://h3/a/::attr(href)"
+      }
+    },
+    "detail": {
+      "list": "xpath://div[@class='playlist']/div[@class='row']/ul/li/a",
+      "fields": {
+        "title": "xpath:",
+        "url": "xpath:/::attr(href)"
+      },
+      "title": "xpath://h1",
+      "cover": "xpath://div[contains(@class,'detail')]//img/::attr(src)"
+    },
+    "chapter": {
+      "content": "xpath://body"
+    },
+    "video": {
+      "episodes": "xpath://div[@class='playlist']/div[@class='row']/ul/li/a",
+      "episodeTitle": "xpath:",
+      "episodeUrl": "xpath:/::attr(href)",
+      "playback": {
+        "kind": "regex",
+        "pattern": "url:\\s*'([^']+\\.m3u8[^']*)'"
+      }
+    }
+  },
+  {
+    "_comment": "由 Kazumi 社区规则 DM84 v1.4 转换而来。播放走第三方加密 iframe，取不到直链 —— 这条用来验证『规则能解析但播放不可用』时错误是否说得清楚。",
+    "schemaVersion": 1,
+    "id": "kazumi-dm84",
+    "name": "DM84（Kazumi 社区）",
+    "version": "1.4",
+    "homepage": "https://dmbus.cc/",
+    "language": "zh",
+    "type": "video",
+    "enabled": true,
+    "request": {
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      },
+      "timeoutMs": 20000,
+      "delayMs": 400
+    },
+    "search": {
+      "url": "https://dmbus.cc/s----------.html?wd={{keyword}}",
+      "method": "GET",
+      "list": "xpath://div/div[3]/ul/li",
+      "fields": {
+        "title": "xpath://div/a[2]",
+        "detailUrl": "xpath://div/a[2]/::attr(href)"
+      }
+    },
+    "detail": {
+      "list": "xpath://div/div[4]/div/ul/li/a",
+      "fields": {
+        "title": "xpath:",
+        "url": "xpath:/::attr(href)"
+      }
+    },
+    "chapter": {
+      "content": "xpath://body"
+    },
+    "video": {
+      "episodes": "xpath://div/div[4]/div/ul/li/a",
+      "episodeTitle": "xpath:",
+      "episodeUrl": "xpath:/::attr(href)",
+      "playback": {
+        "kind": "regex",
+        "pattern": "<iframe[^>]*src=\"([^\"]+)\""
+      }
+    }
+  },
+  {
+    "_comment": "由 Kazumi 社区规则 AGE v1.6 转换而来。这一条演示多线路：chapterRoads 命中多个 div，每个是一路播放源。播放同样走第三方解析，不可直取。",
+    "schemaVersion": 1,
+    "id": "kazumi-age",
+    "name": "AGE（Kazumi 社区）",
+    "version": "1.6",
+    "homepage": "https://www.agedm.io/",
+    "language": "zh",
+    "type": "video",
+    "enabled": true,
+    "request": {
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.agedm.io/"
+      },
+      "timeoutMs": 20000,
+      "delayMs": 400
+    },
+    "search": {
+      "url": "https://www.agedm.io/search?query={{keyword}}",
+      "method": "GET",
+      "list": "xpath://div[2]/div/section/div/div/div/div",
+      "fields": {
+        "title": "xpath://div/div[2]/h5/a",
+        "detailUrl": "xpath://div/div[2]/h5/a/::attr(href)"
+      }
+    },
+    "detail": {
+      "list": "xpath://div[2]/div/section/div/div[2]/div[2]/div[2]/div/ul/li/a",
+      "fields": {
+        "title": "xpath:",
+        "url": "xpath:/::attr(href)"
+      }
+    },
+    "chapter": {
+      "content": "xpath://body"
+    },
+    "video": {
+      "roads": "xpath://div[2]/div/section/div/div[2]/div[2]/div[2]/div",
+      "episodes": "xpath://ul/li/a",
+      "episodeTitle": "xpath:",
+      "episodeUrl": "xpath:/::attr(href)",
+      "playback": {
+        "kind": "page",
+        "pageUrl": "xpath:",
+        "url": "xpath://body"
+      }
+    }
+  }
+]

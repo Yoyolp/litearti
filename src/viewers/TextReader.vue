@@ -14,6 +14,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { DecodedText, Entry, ViewerHost } from '@/types/viewer'
 import { t } from '@/i18n'
 import { clamp } from '@/utils/format'
+import {
+  FONT_SIZE_RANGE,
+  reading,
+  readingStyle,
+  updateReading,
+} from '@/library/readingPrefs'
 import { chapterAtRatio, chapterBody, splitChapters, type TextChapter } from './txt/chapters'
 
 const props = defineProps<{ entry: Entry; host: ViewerHost }>()
@@ -22,7 +28,6 @@ const scrollEl = ref<HTMLElement | null>(null)
 const decoded = ref<DecodedText | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
-const fontSize = ref(17)
 const chosenEncoding = ref<string | undefined>(undefined)
 const encodingMenuOpen = ref(false)
 const tocOpen = ref(false)
@@ -77,8 +82,12 @@ async function load(): Promise<void> {
     chapters.value = splitChapters(result.text)
 
     const stored = readStoredProgress()
-    if (stored && typeof stored.fontSize === 'number') fontSize.value = stored.fontSize
-
+    // Font size comes from the shared reading preference, not from this entry's
+    // progress. It used to be stored per entry, which meant the same person got a
+    // different size in every file and Settings could not show a true value. The
+    // old field is left in stored progress untouched rather than migrated: reading
+    // it back into the global preference would silently change the setting for
+    // every other book.
     if (chapters.value.length) {
       // Progress written before chapters existed holds a whole-file ratio.
       // Map it onto a chapter so an existing reader is not thrown back to the
@@ -124,7 +133,6 @@ function scheduleSave(): void {
     void props.host.saveProgress(props.entry.id, {
       version: 1,
       ratio: clamp(ratio, 0, 1),
-      fontSize: fontSize.value,
       ...(chaptered.value ? { chapter: chapterIndex.value } : {}),
     } satisfies TextProgress)
   }, 600)
@@ -140,8 +148,11 @@ function setEncoding(value: string | undefined): void {
   void load()
 }
 
+/** The size control writes to the shared preference, not to per-entry progress. */
 function changeFontSize(delta: number): void {
-  fontSize.value = clamp(fontSize.value + delta, 13, 28)
+  updateReading({ fontSize: reading.value.fontSize + delta })
+  // The ratio depends on how much text fits on screen, so a size change shifts
+  // where the reader is. Re-saving keeps the stored position honest.
   scheduleSave()
 }
 
@@ -209,7 +220,6 @@ onBeforeUnmount(() => {
     void props.host.saveProgress(props.entry.id, {
       version: 1,
       ratio: clamp(ratio, 0, 1),
-      fontSize: fontSize.value,
     } satisfies TextProgress)
   }
 })
@@ -295,7 +305,7 @@ onBeforeUnmount(() => {
           class="btn btn--tertiary"
           type="button"
           :aria-label="t('txt.fontSmaller')"
-          :disabled="fontSize <= 13"
+          :disabled="reading.fontSize <= FONT_SIZE_RANGE.min"
           @click="changeFontSize(-1)"
         >
           A−
@@ -304,7 +314,7 @@ onBeforeUnmount(() => {
           class="btn btn--tertiary"
           type="button"
           :aria-label="t('txt.fontLarger')"
-          :disabled="fontSize >= 28"
+          :disabled="reading.fontSize >= FONT_SIZE_RANGE.max"
           @click="changeFontSize(1)"
         >
           A+
@@ -327,7 +337,7 @@ onBeforeUnmount(() => {
           {{ t('common.retry') }}
         </button>
       </div>
-      <article v-else class="prose" :style="{ fontSize: `${fontSize}px` }">
+      <article v-else class="prose" :style="readingStyle()">
         <p
           v-for="line in paragraphs"
           :key="line.key"

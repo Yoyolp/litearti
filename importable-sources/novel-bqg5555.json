@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "bqg5555",
+  "name": "笔趣阁 bqg5555",
+  "version": "1.0.0",
+  "homepage": "https://www.bqg5555.cc/",
+  "language": "zh",
+  "type": "novel",
+  "enabled": true,
+  "request": {
+    "headers": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept-Language": "zh-CN,zh;q=0.9",
+      "Referer": "https://www.bqg5555.cc/"
+    },
+    "timeoutMs": 20000,
+    "delayMs": 500
+  },
+  "search": {
+    "url": "https://www.bqg5555.cc/search/",
+    "method": "POST",
+    "body": "type=articlename&searchkey={{keyword}}",
+    "list": "css:ul.txt-list li",
+    "fields": {
+      "title": "css:.s2 a",
+      "author": "css:.s4",
+      "detailUrl": "css:.s2 a@href"
+    }
+  },
+  "detail": {
+    "list": "css:#info ~ .section-box a",
+    "fields": {
+      "title": "css:",
+      "url": "css:@href"
+    },
+    "title": "css:meta[property=\"og:novel:book_name\"]@content",
+    "author": "css:meta[property=\"og:novel:author\"]@content",
+    "cover": "css:.imgbox img@src",
+    "intro": "css:#m_desc"
+  },
+  "chapter": {
+    "content": "css:#content p",
+    "nextUrl": "css:a[rel=\"next\"]@href"
+  }
+}

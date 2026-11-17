@@ -12,19 +12,83 @@
 
 import type { Component } from 'vue'
 
+/**
+ * What a library entry points at.
+ *
+ * One shelf, two shapes. A person does not think of "files I imported" and "titles I
+ * added from a source" as separate places — they think "things I can open" — so the
+ * list holds both and filters separate them. The unused fields are empty rather than
+ * absent, which is what lets an old `library.json` load unchanged.
+ */
+export type EntryKind = 'file' | 'online'
+
+/** Where an online entry came from. */
+export interface EntryRef {
+  sourceId: string
+  /**
+   * The source's display name when the entry was added.
+   *
+   * Kept even after the source is deleted, so the UI can say "这个源已删除（MXdm）"
+   * instead of showing an id nobody recognises.
+   */
+  sourceName?: string | null
+  /** The title's detail page on that source. */
+  detailUrl: string
+  cover?: string | null
+  episodeCount?: number | null
+  /**
+   * Set when the source was found missing or disabled; cleared when a lookup
+   * succeeds. Never a reason to delete the entry — that is the person's record.
+   */
+  invalid: boolean
+}
+
 /** A library entry as the backend stores it. */
 export interface Entry {
   id: string
+  /** What this points at. Defaults to `file` for libraries written before this existed. */
+  kind: EntryKind
   title: string
-  /** Lowercase extension without the dot; empty string when there is none. */
+  /** Lowercase extension without the dot; empty string when there is none, and always empty for online entries. */
   extension: string
   size: number
   sourcePath: string
   storedName: string
   addedAt: number
   lastOpenedAt: number | null
-  /** Viewer-owned resume state. Shape is defined by the viewer, not the shell. */
+  /**
+   * A display name the person typed over `title`.
+   *
+   * Kept separate from `title` rather than overwriting it: the imported name is
+   * still the only link back to the original file, and clearing the rename is
+   * the undo.
+   */
+  rename?: string | null
+  /**
+   * The group this entry belongs to, e.g. the source it was downloaded from.
+   * Absent for hand-imported files, which is the common case.
+   */
+  group?: string | null
+  /** Where an online entry came from. Absent for files. */
+  reference?: EntryRef | null
+  /**
+   * Viewer-owned resume state. Shape is defined by the viewer, not the shell.
+   *
+   * For online entries this is the only playback position. There is deliberately no
+   * second copy in localStorage: two stores for one fact is how the library ends up
+   * saying "episode 3" while the player says "episode 5".
+   */
   progress: unknown
+}
+
+/** Whether an entry is a managed file rather than a reference to a source. */
+export function isFileEntry(entry: Entry): boolean {
+  return entry.kind !== 'online'
+}
+
+/** Whether an entry is a reference that currently cannot be opened. */
+export function isBrokenRef(entry: Entry): boolean {
+  return entry.kind === 'online' && entry.reference?.invalid === true
 }
 
 /**

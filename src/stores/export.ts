@@ -1,11 +1,12 @@
 /**
- * Export state: which entries are selected, which target is chosen, and what
- * happened last time.
+ * Export state: which target is chosen, and what happened last time.
  *
- * Deliberately separate from `stores/library.ts`. Selection is a transient
- * interaction mode that belongs to one screen; putting it in the library store
- * would mean every reader of that store has to care about it, and would make
- * the export feature impossible to remove cleanly.
+ * Selection itself is not here. It used to be, which meant the export feature
+ * owned the library's "I am choosing rows" mode — and once batch deletion wanted
+ * the same mode, that ownership was clearly wrong. See `stores/selection.ts`.
+ *
+ * What remains is genuinely export-specific: the target format, the conversion
+ * run, and its outcome.
  */
 
 import { defineStore } from 'pinia'
@@ -15,6 +16,7 @@ import { registerBuiltinTargets } from '@/export/builtins'
 import { pickExportDirectory } from '@/export/pickDirectory'
 import { runExport, type ExportSkip } from '@/export/pipeline'
 import { allTargets, targetSupports, type ConvertTarget } from '@/export/registry'
+import { useSelectionStore } from '@/stores/selection'
 
 export interface ExportResult {
   written: number
@@ -22,11 +24,10 @@ export interface ExportResult {
 }
 
 export const useExportStore = defineStore('export', () => {
-  /** Whether the library is in selection mode. */
-  const selecting = ref(false)
+  const selection = useSelectionStore()
+
   /** Chosen target id; null until a menu item is picked. */
   const targetId = ref<string | null>(null)
-  const selected = ref<Set<string>>(new Set())
   const running = ref(false)
   /** Progress during conversion: [done, total]. */
   const progress = ref<[number, number] | null>(null)
@@ -41,45 +42,6 @@ export const useExportStore = defineStore('export', () => {
     () => targets.value.find((t) => t.id === targetId.value) ?? null,
   )
 
-  const count = computed(() => selected.value.size)
-
-  function isSelected(id: string): boolean {
-    return selected.value.has(id)
-  }
-
-  /** Enter selection mode for a target. */
-  function begin(id: string): void {
-    targetId.value = id
-    selecting.value = true
-    selected.value = new Set()
-    result.value = null
-    error.value = null
-  }
-
-  function cancel(): void {
-    selecting.value = false
-    selected.value = new Set()
-    targetId.value = null
-    progress.value = null
-  }
-
-  function toggle(id: string): void {
-    // Replace the Set so Vue's reactivity sees the change; mutating in place
-    // would not notify the template.
-    const next = new Set(selected.value)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    selected.value = next
-  }
-
-  function selectAll(entries: readonly Entry[]): void {
-    selected.value = new Set(entries.map((e) => e.id))
-  }
-
-  function clearSelection(): void {
-    selected.value = new Set()
-  }
-
   /**
    * Whether a target can take this entry.
    *
@@ -91,6 +53,29 @@ export const useExportStore = defineStore('export', () => {
     const current = target.value
     if (!current) return false
     return targetSupports(current, entry.extension)
+  }
+
+  /**
+   * Enter selection mode for a target.
+   *
+   * The eligibility predicate is close over the target, so the checkboxes in the
+   * list can grey out ineligible rows without the selection store knowing what an
+   * export target is.
+   */
+  function begin(nextTargetId: string): void {
+    targetId.value = nextTargetId
+    result.value = null
+    error.value = null
+    selection.begin('export', (entry) => {
+      const current = targets.value.find((t) => t.id === nextTargetId) ?? null
+      return current ? targetSupports(current, entry.extension) : false
+    })
+  }
+
+  function cancel(): void {
+    selection.cancel()
+    targetId.value = null
+    progress.value = null
   }
 
   /** Entries in the current selection that the target can actually handle. */
@@ -113,7 +98,7 @@ export const useExportStore = defineStore('export', () => {
     const current = target.value
     if (!current) return false
 
-    const chosen = entries.filter((entry) => selected.value.has(entry.id))
+    const chosen = selection.pick(entries)
     if (!chosen.length) return false
 
     const usable = eligible(chosen)
@@ -155,8 +140,7 @@ export const useExportStore = defineStore('export', () => {
         ],
       }
 
-      selecting.value = false
-      selected.value = new Set()
+      selection.cancel()
       targetId.value = null
       return true
     } catch (cause) {
@@ -177,23 +161,16 @@ export const useExportStore = defineStore('export', () => {
   }
 
   return {
-    selecting,
     targetId,
     target,
     targets,
-    selected,
-    count,
     running,
     progress,
     result,
     error,
-    isSelected,
+    supports,
     begin,
     cancel,
-    toggle,
-    selectAll,
-    clearSelection,
-    supports,
     eligible,
     ineligible,
     run,

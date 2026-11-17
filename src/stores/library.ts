@@ -7,7 +7,7 @@
  */
 
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import * as api from '@/api/library'
 import type { Entry } from '@/types/viewer'
 
@@ -37,18 +37,10 @@ export const useLibraryStore = defineStore('library', () => {
   /** Paths from the last import that failed, for the failure detail popover. */
   const lastFailures = ref<{ sourcePath: string; reason: string }[]>([])
 
-  const sorted = computed(() =>
-    [...entries.value].sort((a, b) => {
-      // Order by "last activity": opening a file or importing it both count.
-      // Sorting by opened-only would push a freshly imported file below
-      // everything else, which is the opposite of what a person expects right
-      // after they import it.
-      const aTime = Math.max(a.lastOpenedAt ?? 0, a.addedAt)
-      const bTime = Math.max(b.lastOpenedAt ?? 0, b.addedAt)
-      return bTime - aTime
-    }),
-  )
-
+  // Ordering lives in `src/library/query.ts`, not here. The store holds the
+  // entries as the backend returned them; every view derives its own order via
+  // `applyQuery`. Keeping a second, fixed order in the store would mean two
+  // answers to "what order is the library in".
 
   function byId(id: string): Entry | undefined {
     return entries.value.find((e) => e.id === id)
@@ -57,6 +49,40 @@ export const useLibraryStore = defineStore('library', () => {
   function replace(entry: Entry): void {
     const index = entries.value.findIndex((e) => e.id === entry.id)
     if (index >= 0) entries.value[index] = entry
+  }
+
+  /**
+   * Insert an entry the backend just created, or update it if it is already here.
+   *
+   * Needed because `add_online` writes to disk in the Rust side, and this store only
+   * reads the whole list once at startup. Without this, a title added from a source
+   * detail page exists in `library.json` but not in the running app — the library
+   * looks empty until a restart, which reads as data loss.
+   *
+   * Insert-or-replace rather than plain push: `add_online` is idempotent on
+   * `(sourceId, detailUrl)` and returns the existing entry on a repeat, so a second
+   * click must not produce two rows.
+   */
+  function upsert(entry: Entry): void {
+    const index = entries.value.findIndex((e) => e.id === entry.id)
+    if (index >= 0) entries.value[index] = entry
+    else entries.value = [entry, ...entries.value]
+  }
+
+  /**
+   * Mark in-memory entries that reference `sourceId` as invalid.
+   *
+   * The backend does the same write; this keeps the running app in step with it.
+   * Called from the sources store after deleting or disabling a source, rather than
+   * having that store reach into this one — the dependency runs one way (sources →
+   * library is a call, library → sources is not a dependency), which keeps either
+   * module loadable on its own.
+   */
+  function markSourceInvalid(sourceId: string): void {
+    for (const entry of entries.value) {
+      if (entry.kind !== 'online') continue
+      if (entry.reference?.sourceId === sourceId) entry.reference.invalid = true
+    }
   }
 
   async function load(): Promise<void> {
@@ -112,6 +138,44 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  /** Result of the last batch removal, for the feedback strip. */
+  const lastRemoval = ref<{ removed: number; failed: number } | null>(null)
+
+  /**
+   * Remove several entries in one call.
+   *
+   * Unlike `remove`, this reports partial failure instead of a throwing error:
+   * a batch where two of ten ids were stale should still delete the other eight
+   * and say so, rather than leaving the person to wonder what happened.
+   */
+  async function removeMany(ids: string[]): Promise<void> {
+    if (!ids.length) return
+    try {
+      const report = await api.removeEntries(ids)
+      const gone = new Set(ids)
+      // Only drop the ids the backend confirms it removed, minus the failures.
+      const failedIds = new Set(report.failed.map((failure) => failure.id))
+      entries.value = entries.value.filter((e) => !gone.has(e.id) || failedIds.has(e.id))
+      lastRemoval.value = { removed: report.removed, failed: report.failed.length }
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    }
+  }
+
+  /**
+   * Set or clear the display name.
+   *
+   * A rename is display-only, so a failure here is reported but leaves the entry
+   * as it was; it is never worth blocking the list over.
+   */
+  async function rename(id: string, name: string | null): Promise<void> {
+    try {
+      replace(await api.renameEntry(id, name))
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    }
+  }
+
   async function markOpened(id: string): Promise<void> {
     try {
       replace(await api.touchEntry(id))
@@ -132,20 +196,30 @@ export const useLibraryStore = defineStore('library', () => {
     error.value = null
   }
 
+  function clearRemoval(): void {
+    lastRemoval.value = null
+  }
+
   return {
     entries,
-    sorted,
     loading,
     importing,
     error,
     lastFailures,
+    lastRemoval,
     byId,
+    replace,
+    upsert,
+    markSourceInvalid,
     load,
     importFromPaths,
     pickAndImport,
     remove,
+    removeMany,
+    rename,
     markOpened,
     saveProgress,
     clearError,
+    clearRemoval,
   }
 })

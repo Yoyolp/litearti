@@ -126,7 +126,7 @@ async function main() {
   }
 
   await session.reload()
-  await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')][2].click()`)
+  await session.evaluate(`[...document.querySelectorAll('.nav-list .nav-item')].find((n) => n.textContent.trim() === '源')?.click()`)
   await sleep(1500)
 
   console.log('sources list')

@@ -1,12 +1,19 @@
-//! HTTP access for book sources.
+//! HTTP access for sources.
 //!
-//! This is the only place in the app that talks to the network, and it exists
-//! because a book source needs it: a browser `fetch` from the webview would be
+//! This module talks to the network on behalf of a source the person added, and it
+//! exists because a source needs it: a browser `fetch` from the webview would be
 //! blocked by CORS for essentially every site worth scraping.
+//!
+//! **It is not the only module that reaches the network.** [`crate::bangumi`]
+//! fetches public metadata for the discover screen. The two are separate because
+//! their contracts differ: this one is shaped by scraping (10 MB cap, filtered
+//! headers, no cookie jar), while Bangumi's is a documented public API with its own
+//! rate limit and cache. What they share is the rule that matters — the frontend
+//! never calls `fetch` against either; both go through Rust.
 //!
 //! The command is deliberately narrow rather than a general proxy:
 //!
-//! - **Only GET and POST.** A book source has no business issuing PUT or DELETE
+//! - **Only GET and POST.** A source has no business issuing PUT or DELETE
 //!   against someone else's server.
 //! - **Only http/https.** Redirects to `file:`, `data:` or a custom scheme are
 //!   rejected, so a hostile source cannot turn the fetcher into a local file
@@ -94,6 +101,38 @@ fn ensure_web_url(raw: &str) -> AppResult<reqwest::Url> {
     }
 }
 
+/// Turn a `reqwest` failure into a sentence that names the likely cause.
+///
+/// `reqwest`'s own `Display` for a transport error is the unhelpful
+/// "error sending request for url (…)" — the actual reason lives in the source
+/// chain, and the frontend cannot walk that chain over IPC. Without this, a
+/// timeout, a DNS failure and a refused connection all look identical in the UI,
+/// which sends people to edit the rule instead of checking the network.
+///
+/// `pub(crate)` because the stream proxy reports failures the same way: a media
+/// request that times out should say "超时", not "请求失败".
+pub(crate) fn describe_reqwest_error(error: &reqwest::Error, timeout: Duration) -> String {
+    if error.is_timeout() {
+        return format!("请求超时（{} 秒）", timeout.as_secs_f32().round() as u64);
+    }
+    if error.is_connect() {
+        return format!("无法连接到网站：{error}");
+    }
+    if error.is_redirect() {
+        return format!("重定向失败：{error}");
+    }
+    // Fall back to the full chain rather than the outer message: `{error}` alone
+    // drops the cause, and the cause is the only part a person can act on.
+    let mut detail = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        detail.push_str("：");
+        detail.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    format!("请求失败：{detail}")
+}
+
 /// Fetch one URL for a book source.
 ///
 /// `cookie` is resolved by the caller from the credential store and is attached
@@ -164,7 +203,7 @@ pub async fn fetch(request: SourceRequest, cookie: Option<&str>) -> AppResult<So
     let response = builder
         .send()
         .await
-        .map_err(|error| AppError::Invalid(format!("请求失败：{error}")))?;
+        .map_err(|error| AppError::Invalid(describe_reqwest_error(&error, timeout)))?;
 
     let status = response.status().as_u16();
     let final_url = response.url().to_string();
@@ -271,6 +310,43 @@ mod tests {
         // The credential store is the only path to a `Cookie` header. If this
         // ever fails, a shared source file could carry someone's session.
         assert!(!ALLOWED_REQUEST_HEADERS.contains(&"cookie"));
+    }
+
+    #[test]
+    fn timeout_is_named_in_the_error() {
+        // Drive a real reqwest timeout against a socket that accepts but never
+        // answers, so the assertion is about the actual error classification
+        // rather than a string literal.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            // Accept and hold: the connection succeeds, the response never comes.
+            for stream in listener.incoming() {
+                if stream.is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        });
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let error = runtime.block_on(async {
+            reqwest::Client::builder()
+                .timeout(Duration::from_millis(200))
+                .build()
+                .expect("client")
+                .get(format!("http://127.0.0.1:{port}/"))
+                .send()
+                .await
+                .expect_err("must time out")
+        });
+
+        let text = describe_reqwest_error(&error, Duration::from_secs(15));
+        assert!(text.contains("超时"), "expected a timeout message, got: {text}");
+        assert!(text.contains("秒"), "expected the deadline, got: {text}");
     }
 
     #[test]

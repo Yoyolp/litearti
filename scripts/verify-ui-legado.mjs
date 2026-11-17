@@ -69,7 +69,7 @@ async function waitFor(expression, timeoutMs = 40000) {
   return null
 }
 
-console.log(`安装转换后的书源：${source.name}`)
+console.log(`安装转换后的源：${source.name}`)
 await evaluate(`
   (async () => {
     await window.__TAURI_INTERNALS__.invoke('sources_save', { sources: ${JSON.stringify([source])} })
@@ -79,7 +79,7 @@ await evaluate('location.reload()')
 await sleep(2500)
 
 console.log('搜索')
-await evaluate(`[...document.querySelectorAll('.nav-list .nav-item')][2].click()`)
+await evaluate(`[...document.querySelectorAll('.nav-list .nav-item')].find((n) => n.textContent.trim() === '源')?.click()`)
 const rows = await waitFor(`document.querySelectorAll('.source-row').length`, 20000)
 if (!rows) {
   const diag = await evaluate(`({

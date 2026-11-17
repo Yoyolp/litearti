@@ -1,12 +1,17 @@
 # litearti
 
-一个安静的桌面阅读器：读 TXT、看 PDF、读 EPUB、听音频，另有书源板块可联网找书。
+一个安静的桌面阅读器：读 TXT、看 PDF、读 EPUB、听音频，另有源板块可联网找书找番剧。
 
 **阅读不联网**：本地书的打开、渲染、进度记忆全程离线，不同步、不收集数据。
 
-**书源板块会联网**，且只访问你添加的书源所指向的网站——不上传任何本地数据。这是唯一会离开这台机器的功能，边界写在 [`docs/book-sources.md`](docs/book-sources.md)。
+**两处会联网，都只走 Rust**：
 
-**技术栈**：Tauri 2 + Vue 3 + TypeScript + Vite。没有 UI 组件库——界面完全由 `src/styles/tokens.css` 里的设计系统长出来。运行时前端依赖 5 个，Rust 直接依赖 7 个。
+1. **源** —— 只访问你添加的源所指向的网站，不上传任何本地数据。
+2. **发现** —— 访问 Bangumi 的镜像取番剧资料（播出时间、评分、简介）。只发送季度日期，不发送任何本地数据、也不发送任何能标识你的信息。详见 [`docs/bangumi.md`](docs/bangumi.md)。
+
+除这两处，没有别的功能会离开这台机器。
+
+**技术栈**：Tauri 2 + Vue 3 + TypeScript + Vite。没有 UI 组件库——界面完全由 `src/styles/tokens.css` 里的设计系统长出来。运行时前端依赖 6 个（hls.js 只在播视频时才加载），Rust 直接依赖 7 个。
 
 ---
 
@@ -103,18 +108,30 @@ pnpm app:build    # 构建 release 二进制（不打包安装程序）
 - 原子写，中断不会留下半个文件
 - 目标格式可注册扩展，见 [`docs/export.md`](docs/export.md)
 
-**书源**（唯一联网的板块）
-- 用 JSON 定义书源，导入后即可搜索该网站
-- 三种选择器：JSONPath（JSON API）、CSS（HTML 页面）、受限 JS（沙箱内计算）
+**源**（唯一联网的板块）
+- 用 JSON 定义源，导入后即可搜索该网站；小说 / 漫画 / 听书 / 视频共用一套规则
+- 四种选择器：JSONPath（JSON API）、CSS（HTML 页面）、**XPath**（Kazumi 社区规则用的就是它）、受限 JS（沙箱内计算）
 - 严格校验：结构、类型、枚举、选择器前缀、URL 协议、危险标识符
-- 资源卡片显示**封面 + 标题 + 类型标签**（小说 / 漫画 / 听书 / 视频）
-- 搜索列表没图时，从详情页后台补封面
-- **可以直接粘贴书籍目录页网址**（如 `https://…/xs/250929/`）当作结果打开
-- **「访问网站」按钮**：在系统浏览器里打开书源主页，不占用应用窗口
+- 源管理：按类型分组、搜索、批量启用/停用/删除、新建与编辑
+- **源编辑器**：表单与原文双模式编辑同一份对象，字段级校验，每个选择器都能「试一下」（请求真实页面并显示命中内容）
+- **聚合检索**：一次在所有启用的源里搜，结果按来源分组；某个源超时会单独列为失败，而不是混进「没结果」
+- 规则试跑页：分阶段（搜索 / 详情 / 章节）执行，显示请求地址、耗时、命中数与**被跳过的节点诊断**
+- 资源卡片显示**封面 + 标题 + 类型标签**
+- **可以直接粘贴目录页网址**当作结果打开
+- **「访问网站」按钮**：在系统浏览器里打开源主页，不占用应用窗口
 - 详情页章节列表 → 在线阅读（排版与本地 TXT 一致）或下载导入资料库
 - JS 在 `sandbox="allow-scripts"`（无 `allow-same-origin`）的 iframe 里跑：摸不到父页面、摸不到 Tauri 内部对象、3 秒超时
-- 网络只走 Rust：仅 GET/POST、仅 http(s)、10 MB 上限、不维持 cookie
+- 文本抓取只走 Rust：仅 GET/POST、仅 http(s)、10 MB 上限、不维持 cookie
 - 详见 [`docs/book-sources.md`](docs/book-sources.md)
+
+**视频**（番剧）
+- `type: video` 的源：搜索 → 详情（多线路 / 剧集）→ 在线播放
+- 播放走 `kazumi-stream://` 代理：`<video>` + hls.js，mp4 与 HLS 都支持
+- 代理转发源站要求的 Referer / User-Agent，重写 m3u8（分片、子列表、`EXT-X-KEY`、`EXT-X-MAP`、`EXT-X-MEDIA`），透传 Range
+- 播放进度按集记忆，播完自动下一集
+- **能直接取流与不能直接取流的源会区分开**：取不到直链的源在详情页就提示「需要浏览器嗅探，当前不支持」，剧集列表仍然可用
+- 边界说明见 [`docs/anime-section.md`](docs/anime-section.md)、[`docs/kazumi-community-sources.md`](docs/kazumi-community-sources.md)
+
 
 **其他**
 - 全中文文案，key 化（`src/i18n/`），加语言只需加字典
@@ -282,13 +299,15 @@ Rust 侧**只知道扩展名字符串**，不知道什么是 PDF。哪个扩展�
 
 ### 3. 联网被隔离在一个板块里
 
-书源是唯一会联网的功能，而且：
+源是唯一会联网的功能，而且：
 
-- 网络只走 Rust（`net.rs`），只允许 GET/POST、只允许 http(s)
-- 书源里的 JS 在 `sandbox="allow-scripts"`（**无** `allow-same-origin`）的 iframe 里跑，摸不到应用和 Tauri
-- 书源数据存在 `sources/`，与 `library/` 完全分开
+- 文本抓取只走 Rust（`net.rs`），只允许 GET/POST、只允许 http(s)、10 MB 上限
+- 源里的 JS 在 `sandbox="allow-scripts"`（**无** `allow-same-origin`）的 iframe 里跑，摸不到应用和 Tauri
+- 源数据存在 `sources/`，与 `library/` 完全分开
+- **视频流走第二条通道**（`stream.rs`），只允许 GET、只允许 http(s)、重定向逐跳校验、不维持 cookie；
+  唯一被放宽的是体积上限（分片 64 MB，因为视频分片天然超过 10 MB）。详见 [`docs/stream-proxy.md`](docs/stream-proxy.md)
 
-看板、资料库、本地阅读全程离线，这一点没有被书源功能动摇。
+看板、资料库、本地阅读全程离线，这一点没有被这些功能动摇。
 
 ---
 

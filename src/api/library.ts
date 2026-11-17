@@ -10,7 +10,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import type { Entry } from '@/types/viewer'
+import type { Entry, EntryRef } from '@/types/viewer'
 
 export interface ImportReport {
   imported: Entry[]
@@ -51,6 +51,101 @@ export async function importPaths(paths: string[]): Promise<ImportReport> {
 
 export async function removeEntry(id: string): Promise<void> {
   await invoke('library_remove', { id })
+}
+
+/** Per-id failure from a batch removal. */
+export interface RemoveFailure {
+  id: string
+  reason: string
+}
+
+export interface RemoveManyReport {
+  removed: number
+  failed: RemoveFailure[]
+}
+
+/**
+ * Remove several entries in one backend write.
+ *
+ * A batch on purpose: each single removal rewrites the whole metadata file, so
+ * cleaning up fifty files one call at a time would be fifty read-modify-write
+ * cycles. Unknown ids come back as `failed` rather than aborting the batch.
+ */
+export async function removeEntries(ids: string[]): Promise<RemoveManyReport> {
+  return invoke<RemoveManyReport>('library_remove_many', { ids })
+}
+
+/**
+ * Set the display name, or clear it back to the imported title.
+ *
+ * Takes effect only in the UI: the stored file is never touched, which is what
+ * makes clearing the name a complete undo.
+ */
+export async function renameEntry(id: string, rename: string | null): Promise<Entry> {
+  return invoke<Entry>('library_rename', { id, rename })
+}
+
+/** Add a title that lives on a source, referenced rather than copied. */
+export async function addOnline(reference: EntryRef, title: string): Promise<Entry> {
+  return invoke<Entry>('library_add_online', { reference, title })
+}
+
+/** Point an online entry at a different source after a successful re-match. */
+export async function rematchOnline(id: string, reference: EntryRef): Promise<Entry> {
+  return invoke<Entry>('library_rematch_online', { id, reference })
+}
+
+/** Clear the invalid flag for one online entry. */
+export async function reinstateOnline(id: string): Promise<Entry> {
+  return invoke<Entry>('library_reinstate_online', { id })
+}
+
+/** Mark every online entry belonging to a source as invalid. Returns how many. */
+export async function invalidateSource(sourceId: string): Promise<number> {
+  return invoke<number>('library_invalidate_source', { sourceId })
+}
+
+/** Whether this build can sniff media, and why not when it cannot. */
+export interface SniffSupport {
+  supported: boolean
+  message: string | null
+}
+
+export async function sniffSupported(): Promise<SniffSupport> {
+  return invoke<SniffSupport>('sniff_supported')
+}
+
+/**
+ * Result of a sniff.
+ *
+ * Tagged rather than "URL or null": `unplayable` and `notFound` both have no URL,
+ * and they call for different words. A single nullable field would collapse that
+ * distinction at the boundary, and it could never be recovered above.
+ */
+export type SniffReport =
+  | { kind: 'found'; url: string; master: boolean }
+  | { kind: 'unplayable'; message: string }
+  | { kind: 'notFound'; message: string }
+
+/**
+ * Watch an episode page and report what it plays.
+ *
+ * Slow by nature: the collector waits a fixed window so it collects every candidate
+ * rather than the first one — on real sites the first is usually a pre-roll ad.
+ */
+export async function sniffMedia(request: {
+  pageUrl: string
+  sourceId: string
+  referer?: string | null
+  userAgent?: string | null
+}): Promise<SniffReport> {
+  return invoke<SniffReport>('sniff_media', {
+    pageUrl: request.pageUrl,
+    sourceId: request.sourceId,
+    referer: request.referer ?? null,
+    userAgent: request.userAgent ?? null,
+    timeoutMs: null,
+  })
 }
 
 export async function setProgress(id: string, progress: unknown): Promise<Entry> {

@@ -370,7 +370,7 @@ async function main() {
 
     // The app comes back on the dashboard, so navigate to the library before
     // looking for the row.
-    await session.evaluate(`[...document.querySelectorAll('.nav-item')][1].click()`)
+    await session.evaluate(`[...document.querySelectorAll('.nav-item')].find((n) => n.textContent.trim() === '资料库')?.click()`)
     await sleep(1000)
 
     const resumed = await session.evaluate(`

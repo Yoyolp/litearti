@@ -7,8 +7,10 @@ src-tauri/target/
 
 # Generated pdf.js runtime assets (recreated by `pnpm prepare:pdfjs`)
 public/pdfjs/
+demo/
 
 # Local scratch
 .testdata/
 *.local
 .devlog*.txt
+

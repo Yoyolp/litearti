@@ -29,8 +29,15 @@
 export const RESOURCE_TYPES = ['novel', 'comic', 'audio', 'video'] as const
 export type ResourceType = (typeof RESOURCE_TYPES)[number]
 
-/** Selector prefixes. A field value must start with one of these. */
-export const SELECTOR_PREFIXES = ['$.', 'css:', '@js:'] as const
+/**
+ * Selector prefixes. A field value must start with one of these.
+ *
+ * `xpath:` was added for Kazumi's community rules, which are all XPath. It uses
+ * the browser's own engine, so every axis works — but it has its own attribute
+ * syntax (`/::attr(href)` rather than `@href`), because `@` is already XPath
+ * syntax inside a predicate. See `selector.ts` for why that matters.
+ */
+export const SELECTOR_PREFIXES = ['$.', 'css:', 'xpath:', '@js:'] as const
 
 /** Placeholders allowed in URL templates. */
 export const URL_VARIABLES = ['keyword', 'page', 'id', 'url'] as const
@@ -125,6 +132,70 @@ export interface BookSource {
   chapter: ChapterConfig
   download?: DownloadConfig
   auth?: AuthConfig
+  /**
+   * Video-only: how to enumerate episodes and turn one into a playable URL.
+   *
+   * Present only when `type === 'video'`. Text-based sources use `chapter`
+   * instead — the two describe different things (a body of text versus a media
+   * URL) and mixing them would make every field optional in the validator.
+   */
+  video?: VideoConfig
+}
+
+/**
+ * How to get from an episode page to a media URL.
+ *
+ * Four shapes, chosen because they cover what real sites actually do:
+ *
+ * - `direct` — the episode page itself contains the address (an inline script is
+ *   the common case).
+ * - `page` — the episode page links to a separate player page that holds it.
+ * - `regex` — the address is built by JavaScript and only extractable by pattern.
+ * - `api` — a JSON endpoint returns it, keyed by a JSONPath.
+ *
+ * A source that fits none of them needs WebView sniffing, which this app does not
+ * do — the validator and the UI both say so rather than failing mysteriously.
+ */
+export type PlaybackConfig =
+  | { kind: 'direct'; url: string }
+  | { kind: 'page'; pageUrl: string; url: string }
+  | { kind: 'regex'; pattern: string; group?: number }
+  | { kind: 'api'; url: string; method: 'GET' | 'POST'; body?: string; urlPath: string }
+  /**
+   * Open the episode page in a hidden browser window and watch its traffic.
+   *
+   * The last resort for sites that build the media URL in JavaScript or hand it to
+   * a third-party player. Slower than the declarative kinds (it waits a fixed window
+   * to collect everything, because the first HLS request on a page is often a
+   * pre-roll ad), and only available on platforms with a browser-collector — see
+   * `docs/sniffing.md`.
+   */
+  | {
+      kind: 'sniff'
+      /** What to look for. A hint, not a filter: an unexpected kind is still returned. */
+      expect?: 'hls' | 'mp4' | 'any'
+    }
+
+/** Video-only episode configuration. */
+export interface VideoConfig {
+  /**
+   * Playback line (road) list selector.
+   *
+   * Omitted means a single line read from the detail page. When present, each
+   * matched element is one line and `episodes` runs inside it — which is how a
+   * site offering "线路一 / 线路二" is expressed.
+   */
+  roads?: string
+  /** Line name, evaluated inside each road element. Defaults to 线路 N. */
+  roadsName?: string
+  /** Episode list selector. Inside each road when `roads` is set. */
+  episodes: string
+  /** Episode title. Defaults to 第 N 集. */
+  episodeTitle?: string
+  /** Episode link. */
+  episodeUrl: string
+  /** How to reach the media URL from that link. */
+  playback: PlaybackConfig
 }
 
 /** One validation problem, addressed to the field that caused it. */
@@ -309,6 +380,98 @@ function checkUrlTemplate(issues: Issues, path: string, template: string): void 
 }
 
 /**
+ * Validate a `playback` block.
+ *
+ * Split out because the four shapes share almost nothing: each has its own
+ * required selectors and one (`regex`) has a pattern that must actually compile.
+ * Reporting a bad pattern here is much better than throwing at play time.
+ */
+function checkPlayback(issues: Issues, playback: Record<string, unknown>): void {
+  const kind = playback.kind
+  const kinds = ['direct', 'page', 'regex', 'api', 'sniff']
+  if (kind === undefined) {
+    issues.add('video.playback.kind', '必填字段缺失')
+    return
+  }
+  if (typeof kind !== 'string' || !kinds.includes(kind)) {
+    issues.add('video.playback.kind', `应为 ${kinds.join(' / ')} 之一，实际是 ${String(kind)}`)
+    return
+  }
+
+  switch (kind) {
+    case 'direct': {
+      const url = issues.string(playback, 'video.playback.url', 'url')
+      if (url !== undefined) checkSelector(issues, 'video.playback.url', url)
+      break
+    }
+    case 'page': {
+      for (const key of ['pageUrl', 'url'] as const) {
+        const value = issues.string(playback, `video.playback.${key}`, key)
+        if (value !== undefined) checkSelector(issues, `video.playback.${key}`, value)
+      }
+      break
+    }
+    case 'regex': {
+      const pattern = issues.string(playback, 'video.playback.pattern', 'pattern')
+      if (pattern !== undefined) {
+        try {
+          // A regex that does not compile would throw at play time, on a page the
+          // author cannot reproduce from the error alone.
+          new RegExp(pattern)
+        } catch (error) {
+          issues.add(
+            'video.playback.pattern',
+            `正则表达式无效：${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+      }
+      // `group` is optional; if present it must be a sane capture index.
+      if (playback.group !== undefined) {
+        const group = playback.group
+        if (typeof group !== 'number' || !Number.isInteger(group) || group < 0) {
+          issues.add('video.playback.group', `应为非负整数，实际是 ${String(group)}`)
+        }
+      }
+      break
+    }
+    case 'api': {
+      const url = issues.string(playback, 'video.playback.url', 'url')
+      if (url !== undefined) checkUrlTemplate(issues, 'video.playback.url', url)
+
+      const method = playback.method
+      if (method !== undefined && method !== 'GET' && method !== 'POST') {
+        issues.add('video.playback.method', `应为 GET 或 POST，实际是 ${String(method)}`)
+      }
+      issues.string(playback, 'video.playback.body', 'body', false)
+
+      const urlPath = issues.string(playback, 'video.playback.urlPath', 'urlPath')
+      // The API shape reads JSON, so the path must be JSONPath — a CSS or XPath
+      // expression here would fail at runtime with a confusing message.
+      if (urlPath !== undefined && !urlPath.startsWith('$.')) {
+        issues.add('video.playback.urlPath', '应为 JSONPath（以 $. 开头）')
+      }
+      break
+    }
+    case 'sniff': {
+      // `expect` is a hint, so a bad value is a warning about a mistake rather than
+      // a hard failure — but it is still worth catching: a typo here silently makes
+      // the hint do nothing.
+      if (playback.expect !== undefined) {
+        const expect = playback.expect
+        const allowed = ['hls', 'mp4', 'any']
+        if (typeof expect !== 'string' || !allowed.includes(expect)) {
+          issues.add(
+            'video.playback.expect',
+            `应为 ${allowed.join(' / ')} 之一，实际是 ${String(expect)}`,
+          )
+        }
+      }
+      break
+    }
+  }
+}
+
+/**
  * Validate one parsed JSON document as a book source.
  *
  * Returns every issue rather than the first, so a person fixing a source sees
@@ -318,7 +481,7 @@ export function validateSource(input: unknown): ValidationResult {
   const issues = new Issues()
 
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    return { ok: false, issues: [{ path: '', message: '书源必须是一个 JSON 对象' }] }
+    return { ok: false, issues: [{ path: '', message: '源必须是一个 JSON 对象' }] }
   }
   const root = input as Record<string, unknown>
 
@@ -447,6 +610,38 @@ export function validateSource(input: unknown): ValidationResult {
     if (nextUrl !== undefined) checkSelector(issues, 'chapter.nextUrl', nextUrl)
   }
 
+  // --- video (optional, video sources only) ---
+  const video = issues.object(root, 'video', 'video', false)
+  if (video) {
+    // The type gate is a hard rule rather than a warning: a novel source with a
+    // `video` block is a copy-paste error, and silently accepting it would leave
+    // the author wondering why their episode selectors never run.
+    if (type !== 'video') {
+      issues.add('video', `video 配置只用于 type 为 video 的源（当前是 ${String(type)}）`)
+    }
+
+    const episodes = issues.string(video, 'video.episodes', 'episodes')
+    if (episodes !== undefined) checkSelector(issues, 'video.episodes', episodes)
+
+    const episodeUrl = issues.string(video, 'video.episodeUrl', 'episodeUrl')
+    if (episodeUrl !== undefined) checkSelector(issues, 'video.episodeUrl', episodeUrl)
+
+    for (const optional of ['roads', 'roadsName', 'episodeTitle'] as const) {
+      const value = issues.string(video, `video.${optional}`, optional, false)
+      if (value !== undefined) checkSelector(issues, `video.${optional}`, value)
+    }
+
+    const playback = issues.object(video, 'video.playback', 'playback')
+    if (playback) {
+      checkPlayback(issues, playback)
+    }
+  } else if (type === 'video') {
+    // A video source with no way to enumerate episodes has nothing to play. This
+    // is the default state of a freshly converted Kazumi rule that only had
+    // `chapterRoads`/`chapterResult`, so the message points at the fix.
+    issues.add('video', 'video 源必须提供 video 配置（episodes 与 episodeUrl）')
+  }
+
   // --- download (optional) ---
   const download = issues.object(root, 'download', 'download', false)
   if (download) {
@@ -544,6 +739,16 @@ export function validateSource(input: unknown): ValidationResult {
           host: auth.host as string | undefined,
         }
       : undefined,
+    video: video
+      ? {
+          roads: video.roads as string | undefined,
+          roadsName: video.roadsName as string | undefined,
+          episodes: video.episodes as string,
+          episodeTitle: video.episodeTitle as string | undefined,
+          episodeUrl: video.episodeUrl as string,
+          playback: video.playback as PlaybackConfig,
+        }
+      : undefined,
   }
 
   return { ok: true, issues: [], source }
@@ -574,7 +779,7 @@ export function validateSourceFile(input: unknown): {
     if (previous !== undefined) {
       issues.push({
         path: `${prefix}id`,
-        message: `id「${source.id}」与第 ${previous + 1} 个书源重复`,
+        message: `id「${source.id}」与第 ${previous + 1} 个源重复`,
       })
       return
     }

@@ -97,7 +97,7 @@ class Session {
 const SAMPLE_SOURCE = {
   schemaVersion: 1,
   id: 'ui-test-source',
-  name: '界面测试书源',
+  name: '界面测试源',
   version: '1.0.0',
   homepage: 'https://example.com',
   type: 'novel',
@@ -130,15 +130,17 @@ async function main() {
         return { count: items.length }
       })()
     `)
-    // dashboard, library, sources, then theme + collapse in the footer.
-    check('sidebar has a sources entry', nav.count >= 5, `${nav.count} nav items`)
+    // library, sources, settings in the nav list, then the collapse control in the
+    // footer. The theme button moved into Settings, so there are four in total now.
+    check('sidebar has a sources entry', nav.count >= 4, `${nav.count} nav items`)
 
     const clicked = await session.evaluate(`
       (() => {
         const items = [...document.querySelectorAll('.nav-list .nav-item')]
-        // Third entry in the nav list is the sources section.
-        const sources = items[2]
-        if (!sources) return { error: 'no third nav item' }
+        // Find by label rather than position: the list was reordered once already,
+        // and an index silently clicks the wrong section when it changes again.
+        const sources = items.find((n) => n.textContent.trim() === '源')
+        if (!sources) return { error: 'no sources nav item' }
         sources.click()
         return { clicked: true }
       })()
@@ -183,7 +185,7 @@ async function main() {
     await session.evaluate(`
       (() => {
         const items = [...document.querySelectorAll('.nav-list .nav-item')]
-        items[2].click()
+        items.find((n) => n.textContent.trim() === '源')?.click()
       })()
     `)
     await sleep(1500)
@@ -198,7 +200,7 @@ async function main() {
       })()
     `)
     check('source listed after reload', listed.count >= 1, JSON.stringify(listed))
-    check('row shows the source name', (listed.text ?? '').includes('界面测试书源'), listed.text)
+    check('row shows the source name', (listed.text ?? '').includes('界面测试源'), listed.text)
     if (listed.text) console.log(`       row: ${listed.text}`)
   }
 

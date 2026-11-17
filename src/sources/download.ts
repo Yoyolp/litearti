@@ -77,7 +77,7 @@ export async function downloadItem(options: DownloadOptions): Promise<DownloadRe
 
   // --- path 2: concatenate chapters ---------------------------------------
   if (!chapters.length) {
-    throw new SelectorError('这个书源没有下载链接，也没有章节可以拼接')
+    throw new SelectorError('这个源没有下载链接，也没有章节可以拼接')
   }
 
   const parts: string[] = [title, '']

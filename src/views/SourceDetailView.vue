@@ -33,6 +33,8 @@ const engine = shallowRef<SourceEngine | null>(null)
 
 const source = computed(() => store.byId(props.sourceId))
 const chapters = computed(() => detail.value?.chapters ?? [])
+/** Nodes the parser had to skip; shown so a short chapter list is explainable. */
+const diagnoses = computed(() => detail.value?.diagnoses ?? [])
 
 function ensureEngine(): SourceEngine | null {
   const current = source.value
@@ -47,7 +49,7 @@ async function load(): Promise<void> {
   error.value = null
   try {
     const active = ensureEngine()
-    if (!active) throw new Error('书源不存在')
+    if (!active) throw new Error('源不存在')
     detail.value = await active.detail(props.item.detailUrl)
   } catch (cause) {
     error.value = cause instanceof SelectorError
@@ -188,6 +190,13 @@ onBeforeUnmount(() => {
 
       <section class="chapters">
         <h2 class="chapters-title">{{ t('source.chapters') }}</h2>
+
+        <!-- A chapter list that parsed only some of the page is a rule problem,
+             not a site problem. Saying so here saves a trip to the editor. -->
+        <p v-if="diagnoses.length" class="chapters-diag">
+          {{ t('source.diagnosesCount', { count: diagnoses.length }) }}
+        </p>
+
         <p v-if="!chapters.length" class="chapters-empty">{{ t('source.noChapters') }}</p>
         <ol v-else class="chapter-list">
           <li v-for="(chapter, index) in chapters" :key="chapter.url" class="chapter-row">
@@ -335,6 +344,12 @@ onBeforeUnmount(() => {
 .chapters-empty {
   font-size: var(--text-sm);
   color: var(--ink-tertiary);
+}
+
+.chapters-diag {
+  font-size: var(--text-xs);
+  color: var(--tone-warning);
+  margin-bottom: var(--space-2);
 }
 
 .chapter-list {

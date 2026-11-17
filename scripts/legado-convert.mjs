@@ -418,7 +418,7 @@ async function main() {
   const raw = JSON.parse(await readFile(input, 'utf8'))
   const list = Array.isArray(raw) ? raw : [raw]
 
-  console.log(`共 ${list.length} 个书源\n`)
+  console.log(`共 ${list.length} 个源\n`)
   const converted = []
 
   for (const [index, item] of list.entries()) {

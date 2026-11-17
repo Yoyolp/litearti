@@ -10,12 +10,9 @@
  * Hierarchy inside the sidebar is carried by weight and a background step, not
  * by an accent color: the active item is the only one at full ink strength.
  */
-import { computed } from 'vue'
 import { t } from '@/i18n'
-import { useThemeStore } from '@/stores/theme'
-import type { ThemeChoice } from '@/stores/theme'
 
-export type ShellSection = 'dashboard' | 'library' | 'sources'
+export type ShellSection = 'library' | 'sources' | 'discover' | 'settings'
 
 const props = defineProps<{
   section: ShellSection
@@ -26,20 +23,6 @@ const emit = defineEmits<{
   navigate: [section: ShellSection]
   'toggle-collapsed': []
 }>()
-
-const theme = useThemeStore()
-
-const themeLabel = computed(() => {
-  const map: Record<ThemeChoice, string> = {
-    light: t('theme.light'),
-    dark: t('theme.dark'),
-    system: t('theme.system'),
-  }
-  return map[theme.choice]
-})
-
-/** One icon per state, so the control's current value is legible at a glance. */
-const themeIcon = computed(() => theme.choice)
 </script>
 
 <template>
@@ -56,25 +39,6 @@ const themeIcon = computed(() => theme.choice)
     </div>
 
     <ul class="nav-list">
-      <li>
-        <button
-          class="nav-item"
-          type="button"
-          :class="{ 'is-active': props.section === 'dashboard' }"
-          :aria-current="props.section === 'dashboard' ? 'page' : undefined"
-          :title="props.collapsed ? t('nav.dashboard') : undefined"
-          @click="emit('navigate', 'dashboard')"
-        >
-          <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="1.5" y="1.5" width="5.5" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4" />
-            <rect x="9" y="1.5" width="5.5" height="4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4" />
-            <rect x="1.5" y="10.5" width="5.5" height="4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4" />
-            <rect x="9" y="7.5" width="5.5" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4" />
-          </svg>
-          <span v-if="!props.collapsed" class="nav-label">{{ t('nav.dashboard') }}</span>
-        </button>
-      </li>
-
       <li>
         <button
           class="nav-item"
@@ -110,32 +74,59 @@ const themeIcon = computed(() => theme.choice)
           <span v-if="!props.collapsed" class="nav-label">{{ t('nav.sources') }}</span>
         </button>
       </li>
+
+      <li>
+        <button
+          class="nav-item"
+          type="button"
+          :class="{ 'is-active': props.section === 'discover' }"
+          :aria-current="props.section === 'discover' ? 'page' : undefined"
+          :title="props.collapsed ? t('nav.discover') : undefined"
+          @click="emit('navigate', 'discover')"
+        >
+          <!-- A compass: finding things you did not know you wanted, as opposed to
+               the globe (sources) which is where you look for a specific title. -->
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+            <path
+              d="M10.6 5.4L9 9 5.4 10.6 7 7z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span v-if="!props.collapsed" class="nav-label">{{ t('nav.discover') }}</span>
+        </button>
+      </li>
+
+      <li>
+        <button
+          class="nav-item"
+          type="button"
+          :class="{ 'is-active': props.section === 'settings' }"
+          :aria-current="props.section === 'settings' ? 'page' : undefined"
+          :title="props.collapsed ? t('nav.settings') : undefined"
+          @click="emit('navigate', 'settings')"
+        >
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+            <path
+              d="M8 1.4v1.8M8 12.8v1.8M1.4 8h1.8M12.8 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span v-if="!props.collapsed" class="nav-label">{{ t('nav.settings') }}</span>
+        </button>
+      </li>
     </ul>
 
-    <!-- Bottom cluster: theme and the collapse control live together, away
-         from navigation, because neither changes which screen you are on. -->
+    <!-- Bottom cluster: only the collapse control now. The theme moved into
+         Settings, where a person goes looking for appearance instead of finding it
+         tucked under navigation. -->
     <div class="sidebar-foot">
-      <button
-        class="nav-item theme-item"
-        type="button"
-        :title="props.collapsed ? `${t('theme.label')}：${themeLabel}` : undefined"
-        @click="theme.cycle()"
-      >
-        <svg v-if="themeIcon === 'light'" class="nav-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.4" />
-          <path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15M3 3l1.3 1.3M11.7 11.7L13 13M13 3l-1.3 1.3M4.3 11.7L3 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-        </svg>
-        <svg v-else-if="themeIcon === 'dark'" class="nav-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M13.5 9.5A5.8 5.8 0 016.5 2.5a5.8 5.8 0 107 7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-        </svg>
-        <svg v-else class="nav-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.4" />
-          <path d="M8 2.4v11.2" stroke="currentColor" stroke-width="1.4" />
-          <path d="M8 2.4a5.6 5.6 0 010 11.2z" fill="currentColor" />
-        </svg>
-        <span v-if="!props.collapsed" class="nav-label">{{ themeLabel }}</span>
-      </button>
-
       <button
         class="nav-item collapse-item"
         type="button"

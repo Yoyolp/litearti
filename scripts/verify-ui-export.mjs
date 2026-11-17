@@ -99,7 +99,7 @@ async function main() {
   await session.send('Runtime.enable')
 
   await session.reload()
-  await session.evaluate(`[...document.querySelectorAll('.nav-item')][1].click()`)
+  await session.evaluate(`[...document.querySelectorAll('.nav-item')].find((n) => n.textContent.trim() === '资料库')?.click()`)
   await sleep(1000)
 
   console.log('menu')

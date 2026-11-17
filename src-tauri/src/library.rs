@@ -163,6 +163,7 @@ impl Library {
 
         Ok(Some(Entry {
             id,
+            kind: crate::model::EntryKind::File,
             title,
             extension,
             size,
@@ -170,6 +171,9 @@ impl Library {
             stored_name,
             added_at: Entry::now_millis(),
             last_opened_at: None,
+            rename: None,
+            group: None,
+            reference: None,
             progress: None,
         }))
     }
@@ -316,6 +320,219 @@ impl Library {
         self.save(&entries)?;
         Ok(snapshot)
     }
+
+    /// Set or clear an entry's display rename.
+    ///
+    /// `None`, an empty string, or whitespace all mean "no rename" and are
+    /// normalized to `None`, so the file stores one state rather than three.
+    /// This is a display-only change: `title` (the imported name) is untouched,
+    /// which is what makes the rename undoable.
+    pub fn rename(&self, id: &str, rename: Option<&str>) -> AppResult<Entry> {
+        let mut entries = self.load()?;
+        let entry = entries
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or_else(|| AppError::NotFound("这个条目".to_string()))?;
+        entry.rename = rename
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let snapshot = entry.clone();
+        self.save(&entries)?;
+        Ok(snapshot)
+    }
+
+    /// Add a title that lives on a source, without copying any file.
+    ///
+    /// Deduplicated on `(sourceId, detailUrl)`: adding the same title twice from the
+    /// same source is almost always a double click, and two identical cards in the
+    /// shelf help nobody. Adding the same title from a *different* source is allowed
+    /// — that is a person deliberately keeping a backup route, and refusing it would
+    /// be second-guessing them.
+    pub fn add_online(&self, reference: crate::model::EntryRef, title: &str) -> AppResult<Entry> {
+        let mut entries = self.load()?;
+
+        // Bind the wanted key once, so the predicate cannot accidentally compare the
+        // candidate with itself — which is exactly the bug this shape invites.
+        let wanted_source = reference.source_id.clone();
+        let wanted_url = reference.detail_url.clone();
+        if let Some(existing) = entries.iter().find(|entry| {
+            entry.kind == crate::model::EntryKind::Online
+                && entry.reference.as_ref().is_some_and(|held| {
+                    held.source_id == wanted_source && held.detail_url == wanted_url
+                })
+        }) {
+            // Already present: return it rather than erroring. The caller wanted the
+            // title in the library, and it is.
+            return Ok(existing.clone());
+        }
+
+        let mut reference = reference;
+        reference.invalid = false;
+        let entry = Entry {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: crate::model::EntryKind::Online,
+            title: title.trim().to_string(),
+            // Not a file: no extension, no size, no stored copy. Zero values rather
+            // than a fake format keeps the format filter honest.
+            extension: String::new(),
+            size: 0,
+            source_path: String::new(),
+            stored_name: String::new(),
+            added_at: Entry::now_millis(),
+            last_opened_at: None,
+            rename: None,
+            group: reference.source_name.clone(),
+            reference: Some(reference),
+            progress: None,
+        };
+        entries.push(entry.clone());
+        self.save(&entries)?;
+        Ok(entry)
+    }
+
+    /// Point an online entry at a different source, after a successful re-match.
+    ///
+    /// Clears `invalid`, because the whole point of a re-match is that the entry works
+    /// again. Progress is **kept**: the position in a title does not change because
+    /// the source hosting it did.
+    pub fn rematch_online(
+        &self,
+        id: &str,
+        reference: crate::model::EntryRef,
+    ) -> AppResult<Entry> {
+        let mut entries = self.load()?;
+        let entry = entries
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or_else(|| AppError::NotFound("这个条目".to_string()))?;
+        if entry.kind != crate::model::EntryKind::Online {
+            return Err(AppError::Invalid("这个条目不是来自源的".to_string()));
+        }
+        let mut reference = reference;
+        reference.invalid = false;
+        entry.group = reference.source_name.clone();
+        entry.reference = Some(reference);
+        let snapshot = entry.clone();
+        self.save(&entries)?;
+        Ok(snapshot)
+    }
+
+    /// Mark every online entry belonging to a source as invalid.
+    ///
+    /// Called when a source is deleted or disabled. Returns how many were touched so
+    /// the caller can tell a person "3 个条目引用了这个源". Entries are kept, never
+    /// removed: the record of what someone added is theirs.
+    pub fn invalidate_by_source(&self, source_id: &str) -> AppResult<usize> {
+        let mut entries = self.load()?;
+        let mut touched = 0;
+        for entry in entries.iter_mut() {
+            if entry.kind != crate::model::EntryKind::Online {
+                continue;
+            }
+            if let Some(reference) = entry.reference.as_mut() {
+                if reference.source_id == source_id && !reference.invalid {
+                    reference.invalid = true;
+                    touched += 1;
+                }
+            }
+        }
+        if touched > 0 {
+            self.save(&entries)?;
+        }
+        Ok(touched)
+    }
+
+    /// Clear the invalid flag for one entry, once its source is usable again.
+    pub fn reinstate_online(&self, id: &str) -> AppResult<Entry> {
+        let mut entries = self.load()?;
+        let entry = entries
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or_else(|| AppError::NotFound("这个条目".to_string()))?;
+        if let Some(reference) = entry.reference.as_mut() {
+            reference.invalid = false;
+        }
+        let snapshot = entry.clone();
+        self.save(&entries)?;
+        Ok(snapshot)
+    }
+
+    /// Remove many entries in one metadata write.
+    ///
+    /// Single-write rather than looping `remove`, because looping would rewrite
+    /// `library.json` once per entry — for a 50-file cleanup that is 50 full
+    /// read-modify-write cycles, and any interruption in the middle leaves the
+    /// library in a state the person did not ask for.
+    ///
+    /// Unknown ids are reported as failures rather than aborting the batch: the
+    /// caller asked to delete what it can see, and a stale id (removed from
+    /// another window) should not block the rest.
+    pub fn remove_many(&self, ids: &[String]) -> AppResult<RemoveManyReport> {
+        let mut entries = self.load()?;
+        let mut removed_entries = Vec::new();
+        let mut failed = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for id in ids {
+            // A duplicate id in the request is not an error; it is the same
+            // intent stated twice.
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            match entries.iter().position(|e| e.id == *id) {
+                Some(position) => removed_entries.push(entries.remove(position)),
+                None => failed.push(RemoveFailure {
+                    id: id.clone(),
+                    reason: "条目不存在".to_string(),
+                }),
+            }
+        }
+
+        if removed_entries.is_empty() {
+            return Ok(RemoveManyReport {
+                removed: 0,
+                failed,
+            });
+        }
+
+        // Same ordering rule as single removal: persist first, then unlink. An
+        // orphan file is recoverable; a listed entry whose file is gone is not.
+        self.save(&entries)?;
+
+        for entry in &removed_entries {
+            let path = self.path_of(entry);
+            if path.exists() {
+                if let Err(error) = fs::remove_file(&path) {
+                    eprintln!(
+                        "litearti: entry {} removed but its file could not be deleted ({}): {}",
+                        entry.id,
+                        error,
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        Ok(RemoveManyReport {
+            removed: removed_entries.len(),
+            failed,
+        })
+    }
+}
+
+/// Outcome of a batch removal.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveManyReport {
+    pub removed: usize,
+    pub failed: Vec<RemoveFailure>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveFailure {
+    pub id: String,
+    pub reason: String,
 }
 
 #[cfg(test)]
@@ -539,5 +756,163 @@ mod tests {
         assert_eq!(report.imported.len(), 1);
         assert_eq!(report.failed.len(), 1);
         assert_eq!(t.library.load().expect("load").len(), 1);
+    }
+
+    // --- rename ------------------------------------------------------------
+
+    #[test]
+    fn rename_overrides_display_but_keeps_title() {
+        let t = TempLibrary::new("rename");
+        let entry = t.import("original.txt", b"x");
+
+        let renamed = t.library.rename(&entry.id, Some("新名字")).expect("rename");
+        assert_eq!(renamed.rename.as_deref(), Some("新名字"));
+        // The imported title is the undo, so it must survive.
+        assert_eq!(renamed.title, "original");
+
+        let stored = t.library.load().expect("load");
+        assert_eq!(stored[0].rename.as_deref(), Some("新名字"));
+        assert_eq!(stored[0].title, "original");
+    }
+
+    #[test]
+    fn rename_is_trimmed() {
+        let t = TempLibrary::new("rename-trim");
+        let entry = t.import("a.txt", b"x");
+        let renamed = t.library.rename(&entry.id, Some("  空格  ")).expect("rename");
+        assert_eq!(renamed.rename.as_deref(), Some("空格"));
+    }
+
+    #[test]
+    fn rename_clears_to_none() {
+        let t = TempLibrary::new("rename-clear");
+        let entry = t.import("a.txt", b"x");
+        t.library.rename(&entry.id, Some("临时")).expect("rename");
+
+        // All three "no rename" spellings must land on the same state.
+        for value in [None, Some(""), Some("   ")] {
+            let cleared = t.library.rename(&entry.id, value).expect("clear");
+            assert_eq!(cleared.rename, None, "value {value:?} should clear");
+            assert_eq!(cleared.title, "a");
+        }
+    }
+
+    #[test]
+    fn rename_unknown_id_errors() {
+        let t = TempLibrary::new("rename-missing");
+        assert!(t.library.rename("no-such-id", Some("x")).is_err());
+    }
+
+    #[test]
+    fn rename_survives_a_reload() {
+        let t = TempLibrary::new("rename-persist");
+        let entry = t.import("b.txt", b"x");
+        t.library.rename(&entry.id, Some("持久")).expect("rename");
+
+        // A fresh Library over the same root reads what was written.
+        let reopened = Library::new(t.root.clone()).expect("reopen");
+        let stored = reopened.load().expect("load");
+        assert_eq!(stored[0].rename.as_deref(), Some("持久"));
+    }
+
+    #[test]
+    fn entry_without_rename_fields_still_loads() {
+        // The whole migration story: an old library.json has neither `rename`
+        // nor `group`. It must load unchanged, not be treated as corrupt.
+        let t = TempLibrary::new("legacy");
+        let raw = r#"{
+            "version": 1,
+            "entries": [{
+                "id": "old",
+                "title": "旧条目",
+                "extension": "txt",
+                "size": 3,
+                "sourcePath": "/tmp/old.txt",
+                "storedName": "old.txt",
+                "addedAt": 1700000000000,
+                "lastOpenedAt": null,
+                "progress": null
+            }]
+        }"#;
+        fs::write(t.root.join("library.json"), raw).expect("write");
+
+        let entries = t.library.load().expect("load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "旧条目");
+        assert_eq!(entries[0].rename, None);
+        assert_eq!(entries[0].group, None);
+    }
+
+    // --- batch removal ------------------------------------------------------
+
+    #[test]
+    fn remove_many_deletes_every_requested_entry() {
+        let t = TempLibrary::new("bulk");
+        let a = t.import("a.txt", b"a");
+        let b = t.import("b.txt", b"b");
+        let keep = t.import("keep.txt", b"k");
+        let (a_path, b_path) = (t.library.path_of(&a), t.library.path_of(&b));
+
+        let report = t
+            .library
+            .remove_many(&[a.id.clone(), b.id.clone()])
+            .expect("remove many");
+
+        assert_eq!(report.removed, 2);
+        assert!(report.failed.is_empty());
+
+        let remaining = t.library.load().expect("load");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, keep.id);
+        assert!(!a_path.exists(), "first file should be deleted");
+        assert!(!b_path.exists(), "second file should be deleted");
+        assert!(t.library.path_of(&keep).exists());
+    }
+
+    #[test]
+    fn remove_many_reports_unknown_ids_without_aborting() {
+        let t = TempLibrary::new("bulk-partial");
+        let a = t.import("a.txt", b"a");
+
+        let report = t
+            .library
+            .remove_many(&[a.id.clone(), "ghost".to_string()])
+            .expect("remove many");
+
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].id, "ghost");
+        assert!(t.library.load().expect("load").is_empty());
+    }
+
+    #[test]
+    fn remove_many_tolerates_duplicate_ids() {
+        let t = TempLibrary::new("bulk-dup");
+        let a = t.import("a.txt", b"a");
+
+        // The same intent stated twice is one removal, not a failure.
+        let report = t
+            .library
+            .remove_many(&[a.id.clone(), a.id.clone()])
+            .expect("remove many");
+
+        assert_eq!(report.removed, 1);
+        assert!(report.failed.is_empty());
+    }
+
+    #[test]
+    fn remove_many_with_no_matches_writes_nothing() {
+        let t = TempLibrary::new("bulk-none");
+        t.import("a.txt", b"a");
+        let before = fs::read_to_string(t.root.join("library.json")).expect("read");
+
+        let report = t
+            .library
+            .remove_many(&["ghost".to_string()])
+            .expect("remove many");
+
+        assert_eq!(report.removed, 0);
+        let after = fs::read_to_string(t.root.join("library.json")).expect("read");
+        assert_eq!(before, after, "an empty batch must not rewrite the file");
     }
 }

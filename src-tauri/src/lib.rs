@@ -1,3 +1,4 @@
+mod bangumi;
 mod credentials;
 mod crypto;
 mod download;
@@ -8,7 +9,10 @@ mod library;
 mod login;
 mod model;
 mod net;
+mod proto;
+mod sniff;
 mod sources;
+mod stream;
 mod text;
 
 use error::AppResult;
@@ -62,6 +66,67 @@ fn library_import(state: State<'_, AppState>, paths: Vec<String>) -> AppResult<I
 #[tauri::command]
 fn library_remove(state: State<'_, AppState>, id: String) -> AppResult<()> {
     with_library(&state, |library| library.remove(&id))
+}
+
+/// Remove several entries in one metadata write.
+///
+/// A batch rather than N calls to `library_remove`: each call rewrites the whole
+/// `library.json`, so deleting fifty files would mean fifty read-modify-write
+/// cycles under the lock.
+#[tauri::command]
+fn library_remove_many(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> AppResult<library::RemoveManyReport> {
+    with_library(&state, |library| library.remove_many(&ids))
+}
+
+/// Set or clear an entry's display name.
+///
+/// `rename: null` (or an empty/blank string) restores the imported title. This
+/// never touches the stored file, so it is always undoable.
+#[tauri::command]
+fn library_rename(
+    state: State<'_, AppState>,
+    id: String,
+    rename: Option<String>,
+) -> AppResult<Entry> {
+    with_library(&state, |library| library.rename(&id, rename.as_deref()))
+}
+
+/// Add a title that lives on a source, referenced rather than copied.
+#[tauri::command]
+fn library_add_online(
+    state: State<'_, AppState>,
+    reference: model::EntryRef,
+    title: String,
+) -> AppResult<Entry> {
+    with_library(&state, |library| library.add_online(reference, &title))
+}
+
+/// Point an online entry at a different source after a successful re-match.
+#[tauri::command]
+fn library_rematch_online(
+    state: State<'_, AppState>,
+    id: String,
+    reference: model::EntryRef,
+) -> AppResult<Entry> {
+    with_library(&state, |library| library.rematch_online(&id, reference))
+}
+
+/// Clear the invalid flag for one online entry.
+#[tauri::command]
+fn library_reinstate_online(state: State<'_, AppState>, id: String) -> AppResult<Entry> {
+    with_library(&state, |library| library.reinstate_online(&id))
+}
+
+/// Mark every online entry belonging to a source as invalid.
+///
+/// Called when a source is deleted or disabled. Returns how many were touched, so
+/// the caller can say "3 个条目引用了这个源" instead of silently changing them.
+#[tauri::command]
+fn library_invalidate_source(state: State<'_, AppState>, source_id: String) -> AppResult<usize> {
+    with_library(&state, |library| library.invalidate_by_source(&source_id))
 }
 
 #[tauri::command]
@@ -212,6 +277,44 @@ fn open_external(url: String) -> AppResult<()> {
     external::open_in_browser(&url)
 }
 
+/// Fetch the weekly Bangumi calendar for a season.
+///
+/// Returns the raw JSON text rather than a parsed struct: the two Bangumi endpoints
+/// disagree on field shapes, and parsing happens once in TypeScript where the shapes
+/// are already normalised and tested against real captured responses. A second parser
+/// in Rust would be a second place for the same bug.
+#[tauri::command]
+async fn bangumi_calendar(
+    app: tauri::AppHandle,
+    start: String,
+    end: String,
+) -> AppResult<String> {
+    bangumi::season_calendar(&sources_root(&app)?, &start, &end).await
+}
+
+/// Fetch one page of trending Bangumi subjects.
+#[tauri::command]
+async fn bangumi_popular(
+    app: tauri::AppHandle,
+    limit: u32,
+    offset: u32,
+) -> AppResult<String> {
+    bangumi::popular(&sources_root(&app)?, limit, offset).await
+}
+
+/// The date range of an anime season, so the frontend does not have to know the
+/// quarter boundaries.
+#[tauri::command]
+fn bangumi_season_range(year: i32, quarter: u8) -> (String, String) {
+    bangumi::season_range(year, quarter)
+}
+
+/// Drop the cached Bangumi responses.
+#[tauri::command]
+fn bangumi_clear_cache(app: tauri::AppHandle) -> AppResult<()> {
+    bangumi::clear_cache(&sources_root(&app)?)
+}
+
 /// Import downloaded bytes into the library.
 ///
 /// Takes the bytes rather than a URL so the download itself stays in the
@@ -269,6 +372,10 @@ async fn source_login_start(app: tauri::AppHandle, source_id: String) -> AppResu
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // The playback proxy. Registered as an async scheme because every request
+        // performs network I/O: a synchronous handler runs on the main thread and
+        // would stall the UI for the duration of each segment fetch.
+        .register_asynchronous_uri_scheme_protocol(proto::SCHEME, proto::handle)
         .setup(|app| {
             // Build the library up front and fail loudly if the data directory
             // cannot be created, instead of surfacing a confusing error on the
@@ -279,12 +386,31 @@ pub fn run() {
             app.manage(AppState {
                 library: Mutex::new(library),
             });
+            // The sniffing collector needs an app handle to create its window, and
+            // it is reached from async code that has none. Recording it here is the
+            // one place a handle is guaranteed to exist.
+            //
+            // `not(test)` matches the module gate in `sniff::mod`: the collector's
+            // COM setup cannot run inside the test harness (it aborts the process at
+            // load time), and the judgement layer it calls is tested directly.
+            #[cfg(all(target_os = "windows", not(test)))]
+            sniff::windows::install_app_handle(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             library_list,
             library_import,
             library_remove,
+            library_remove_many,
+            library_rename,
+            library_add_online,
+            library_rematch_online,
+            library_reinstate_online,
+            library_invalidate_source,
+            bangumi_calendar,
+            bangumi_popular,
+            bangumi_season_range,
+            bangumi_clear_cache,
             library_set_progress,
             library_touch,
             read_binary,
@@ -302,6 +428,8 @@ pub fn run() {
             credentials_status,
             credentials_clear,
             source_login_start,
+            sniff::commands::sniff_supported,
+            sniff::commands::sniff_media,
         ])
         .run(tauri::generate_context!())
         .expect("error while running litearti");
