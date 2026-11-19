@@ -164,6 +164,28 @@ fn wait_for_slot() {
     *guard = Some(std::time::Instant::now());
 }
 
+/// One HTTP client for mirror metadata requests.
+///
+/// Shared for the same reason the cover client is: a client owns its connection pool,
+/// and building one per request means a new TLS handshake every time. Metadata is
+/// fetched far less often than covers, so the win is smaller — but the mistake is the
+/// same mistake, and leaving one instance of it in place invites the other to come
+/// back.
+static METADATA_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn metadata_client() -> Option<&'static reqwest::Client> {
+    if let Some(client) = METADATA_CLIENT.get() {
+        return Some(client);
+    }
+    let client = crate::tls::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent(USER_AGENT)
+        .build()
+        .ok()?;
+    let _ = METADATA_CLIENT.set(client);
+    METADATA_CLIENT.get()
+}
+
 /// Fetch a URL through the mirror, honouring the cache and the rate limit.
 ///
 /// `cache_key` identifies the logical request (not the URL, so a query string that
@@ -183,11 +205,8 @@ async fn fetch_mirror(
         .await
         .map_err(|_| AppError::Invalid("请求排队失败".to_string()))?;
 
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|error| AppError::Invalid(format!("无法创建 HTTP 客户端：{error}")))?;
+    let client = metadata_client()
+        .ok_or_else(|| AppError::Invalid("无法创建 HTTP 客户端".to_string()))?;
 
     let response = match client.get(url).send().await {
         Ok(response) => response,
@@ -330,9 +349,31 @@ const COVER_FAILURE_TTL: Duration = Duration::from_secs(60 * 60);
 /// Ceiling for one cover. Real covers are 30–200 KB.
 const MAX_COVER_BYTES: usize = 3 * 1024 * 1024;
 
+/// How many covers may be in flight at once.
+///
+/// The grid can ask for 80 at once. Firing them all leaves every one of them
+/// competing for the same small connection pool, so *all* of them take the full
+/// timeout in the bad case instead of the first screenful arriving quickly. A
+/// small bound makes the cards that are actually visible finish in one round
+/// trip each, and the rest queue behind them.
+const COVER_CONCURRENCY: usize = 6;
+
 /// Timeout for one cover download. Shorter than a metadata fetch: a cover is small
 /// and the UI has a fallback, so waiting long for it is pure loss.
-const COVER_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Kept deliberately tight: with a placeholder already on screen, a slow cover is
+/// worth abandoning rather than waiting on. Six seconds still allows a real
+/// download over a mobile connection.
+const COVER_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// How long to spend establishing the connection, separately from the total budget.
+///
+/// `reqwest` has no connect timeout by default, so an unreachable host consumes the
+/// whole budget sitting in `connect`. Since a card has a placeholder ready, failing
+/// the connection fast is strictly better than waiting — and on a network where the
+/// cover host resolves to a black hole, this is the difference between a grid that
+/// fills in and one that appears frozen.
+const COVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Stable 64-bit FNV-1a hash, used to name cache files.
 ///
@@ -390,6 +431,118 @@ fn save_failures(root: &Path, failures: &std::collections::BTreeMap<String, u64>
     }
 }
 
+/// Serialises changes to the failure record.
+///
+/// The record is a small JSON file, and updating it is a read-modify-write. A grid of
+/// 24 cards resolves its covers concurrently, so without this lock several of them
+/// read the same snapshot and the last writer wins — **failures are silently lost**,
+/// which means those URLs get retried on the next render, which is exactly the
+/// problem the negative cache exists to solve.
+///
+/// A `std::sync` mutex held across a few-KB file read and write: the work under it is
+/// microseconds and the file is already in the OS cache after the first touch.
+static FAILURE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Remember that one URL failed to download.
+fn record_failure(root: &Path, url: &str) {
+    let _guard = FAILURE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut failures = load_failures(root);
+    failures.insert(url.to_string(), now_millis());
+    save_failures(root, &failures);
+}
+
+/// Forget a URL's failure, after it worked.
+fn forget_failure(root: &Path, url: &str) {
+    let _guard = FAILURE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut failures = load_failures(root);
+    if failures.remove(url).is_some() {
+        save_failures(root, &failures);
+    }
+}
+
+/// Whether a URL has failed recently.
+fn recently_failed(root: &Path, url: &str) -> bool {
+    let _guard = FAILURE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    load_failures(root).contains_key(url)
+}
+
+/// One HTTP client for every cover download.
+///
+/// **This is the fix for covers being slow.** The first version built a fresh
+/// `reqwest::Client` per image, and a client owns its connection pool — so every
+/// cover paid for a new TCP connection and a new TLS handshake against the same host.
+/// A grid of 24 cards meant 24 handshakes where a browser would do one and reuse it.
+///
+/// A `OnceLock` rather than managed state because the client has no configuration
+/// that varies at runtime, and rebuilding it per command would bring the problem back.
+static COVER_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn cover_client() -> Option<&'static reqwest::Client> {
+    if let Some(client) = COVER_CLIENT.get() {
+        return Some(client);
+    }
+    let client = crate::tls::builder()
+        .timeout(COVER_TIMEOUT)
+        // Separate from the total timeout on purpose. An unreachable host would
+        // otherwise burn the whole budget sitting in `connect`, and the card has a
+        // perfectly good placeholder to show instead.
+        .connect_timeout(COVER_CONNECT_TIMEOUT)
+        .user_agent(USER_AGENT)
+        // Room for a full grid plus a little: a season view can show 80 cards.
+        .pool_max_idle_per_host(32)
+        .build()
+        .ok()?;
+    // Losing the race just means another thread's client is already installed.
+    let _ = COVER_CLIENT.set(client);
+    COVER_CLIENT.get()
+}
+
+/// Caps how many covers download at once, process-wide.
+///
+/// A counter rather than a `tokio` semaphore on purpose: `tokio` is only a
+/// dev-dependency here (the tests need a runtime), and promoting it to a real
+/// dependency for one limiter is a poor trade. An atomic plus a guard covers
+/// it, and the guard releases the slot on every path.
+///
+/// Process-wide so two grids rendered back to back cannot double the limit.
+static COVER_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How long to pause between slot checks when every slot is busy.
+///
+/// Short enough that a freed slot is noticed promptly, long enough that several
+/// waiting cards do not saturate a core.
+const COVER_WAIT_STEP: Duration = Duration::from_millis(10);
+
+/// Releases one in-flight slot when dropped, including on cancellation.
+struct CoverSlot;
+
+impl Drop for CoverSlot {
+    fn drop(&mut self) {
+        COVER_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Wait for a free slot.
+///
+/// Yielding with a short sleep is acceptable here because the wait is bounded by a
+/// single cover download and runs on a worker thread inside an async command, not
+/// on the UI thread.
+async fn acquire_cover_slot() -> CoverSlot {
+    use std::sync::atomic::Ordering;
+
+    loop {
+        let current = COVER_IN_FLIGHT.load(Ordering::Acquire);
+        if current < COVER_CONCURRENCY
+            && COVER_IN_FLIGHT
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            return CoverSlot;
+        }
+        std::thread::sleep(COVER_WAIT_STEP);
+    }
+}
+
 /// Get a local path for a cover, downloading it the first time.
 ///
 /// Returns `Ok(None)` when the image cannot be fetched — that is **not an error**.
@@ -413,7 +566,8 @@ pub async fn cover(root: &Path, url: &str) -> AppResult<Option<String>> {
     let dir = cover_dir(root);
     let stem = format!("{:016x}", fnv1a(url));
 
-    // A hit is a file that already exists under any supported extension.
+    // A hit is a file that already exists under any supported extension. This is the
+    // common case after the first view, and it touches no network at all.
     for extension in ["jpg", "png", "webp", "gif", "avif"] {
         let candidate = dir.join(format!("{stem}.{extension}"));
         if candidate.is_file() {
@@ -422,33 +576,29 @@ pub async fn cover(root: &Path, url: &str) -> AppResult<Option<String>> {
     }
 
     // Recently failed: do not retry yet.
-    if load_failures(root).contains_key(url) {
+    if recently_failed(root, url) {
         return Ok(None);
     }
 
-    let client = match reqwest::Client::builder()
-        .timeout(COVER_TIMEOUT)
-        .user_agent(USER_AGENT)
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return Ok(None),
+    let Some(client) = cover_client() else {
+        return Ok(None);
     };
+
+    // Wait for a slot before touching the network. `acquire` only fails if the
+    // semaphore is closed, which nothing here does; treating that as "no cover"
+    // keeps the signature honest.
+    let _permit = acquire_cover_slot().await;
 
     let response = match client.get(parsed).send().await {
         Ok(response) => response,
         Err(_) => {
-            let mut failures = load_failures(root);
-            failures.insert(url.to_string(), now_millis());
-            save_failures(root, &failures);
+            record_failure(root, url);
             return Ok(None);
         }
     };
 
     if !response.status().is_success() {
-        let mut failures = load_failures(root);
-        failures.insert(url.to_string(), now_millis());
-        save_failures(root, &failures);
+        record_failure(root, url);
         return Ok(None);
     }
 
@@ -461,13 +611,14 @@ pub async fn cover(root: &Path, url: &str) -> AppResult<Option<String>> {
 
     let bytes = match response.bytes().await {
         Ok(bytes) => bytes,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            record_failure(root, url);
+            return Ok(None);
+        }
     };
 
     if bytes.is_empty() || bytes.len() > MAX_COVER_BYTES {
-        let mut failures = load_failures(root);
-        failures.insert(url.to_string(), now_millis());
-        save_failures(root, &failures);
+        record_failure(root, url);
         return Ok(None);
     }
 
@@ -482,10 +633,7 @@ pub async fn cover(root: &Path, url: &str) -> AppResult<Option<String>> {
 
     // Success: forget the failure record, so a transient outage does not keep the
     // image hidden for the rest of the TTL.
-    let mut failures = load_failures(root);
-    if failures.remove(url).is_some() {
-        save_failures(root, &failures);
-    }
+    forget_failure(root, url);
 
     Ok(Some(path.to_string_lossy().to_string()))
 }
@@ -747,6 +895,64 @@ mod tests {
         // Reading prunes it, so the next attempt happens after the network is fixed.
         assert!(!load_failures(&root).contains_key(url));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_failures_are_all_recorded() {
+        // Regression test for a lost-update bug. `record_failure` is a
+        // read-modify-write on a JSON file, and a grid of 24 cards resolves its covers
+        // concurrently. Without a lock, several threads read the same snapshot and the
+        // last writer wins — the other failures vanish, and those URLs are retried on
+        // the next render, which is exactly what the negative cache exists to prevent.
+        let root = temp_root("coverrace");
+        std::fs::create_dir_all(cover_dir(&root)).unwrap();
+
+        let handles: Vec<_> = (0..16)
+            .map(|index| {
+                let root = root.clone();
+                std::thread::spawn(move || {
+                    record_failure(&root, &format!("https://api.bgm.tv/{index}.jpg"));
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let failures = load_failures(&root);
+        assert_eq!(
+            failures.len(),
+            16,
+            "every concurrently recorded failure must survive: {:?}",
+            failures.keys().collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_failure_record_can_be_forgotten() {
+        let root = temp_root("coverforget");
+        std::fs::create_dir_all(cover_dir(&root)).unwrap();
+
+        let url = "https://api.bgm.tv/y.jpg";
+        record_failure(&root, url);
+        assert!(recently_failed(&root, url));
+
+        // A later success must clear it, or a transient outage would hide the image
+        // for the rest of the TTL.
+        forget_failure(&root, url);
+        assert!(!recently_failed(&root, url));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_cover_client_is_built_once() {
+        // A second call must return the same instance. If this ever fails, the
+        // per-request client has come back and every cover pays for a new TLS
+        // handshake.
+        let first = cover_client().expect("a client");
+        let second = cover_client().expect("a client");
+        assert!(std::ptr::eq(first, second));
     }
 
     #[test]

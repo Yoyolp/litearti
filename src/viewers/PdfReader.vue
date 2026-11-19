@@ -107,8 +107,11 @@ async function load(): Promise<void> {
       cMapUrl: '/pdfjs/cmaps/',
       cMapPacked: true,
       standardFontDataUrl: '/pdfjs/standard_fonts/',
-      wasmUrl: '/pdfjs/wasm/',
-      iccUrl: '/pdfjs/iccs/',
+      // No `wasmUrl` / `iccUrl`: those exist in pdf.js 6 only. This project
+      // pins 4.10.38 because 6.x requires `Map.getOrInsertComputed`, which the
+      // Android System WebView on the test device (Chrome 134) does not have —
+      // a PDF then fails to open at all. 4.x feature-detects the newer
+      // `Uint8Array` methods and falls back to pure JS, so it needs no polyfill.
     })
 
     task.onPassword = (update: (password: string) => void, reason: number) => {
@@ -211,11 +214,15 @@ async function renderPage(index: number): Promise<void> {
 
     host.replaceChildren(canvas)
 
-    // Pass `canvas` only. pdf.js 6 derives the context itself when a canvas is
-    // given; supplying a context we created with different options made the
-    // render silently produce an empty surface.
+    // pdf.js 4.x takes `canvasContext`; the `canvas` parameter that lets the
+    // engine derive its own context only exists in 6.x. The context must still
+    // be created with the same alpha setting the renderer expects, which is what
+    // `getContext('2d')` gives by default.
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('无法创建画布上下文')
+
     await page.render({
-      canvas,
+      canvasContext: context,
       viewport,
       transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
     }).promise

@@ -11,8 +11,15 @@ const src = join(root, 'node_modules', 'pdfjs-dist')
 const dest = join(root, 'public', 'pdfjs')
 const stampPath = join(dest, '.version')
 
-/** Assets pdf.js loads at runtime by URL rather than by import. */
-const DIRECTORIES = ['cmaps', 'standard_fonts', 'wasm', 'iccs']
+/**
+ * Assets pdf.js loads at runtime by URL rather than by import.
+ *
+ * `wasm` and `icc` are absent from pdf.js 4.x — those directories (and the
+ * matching `wasmUrl` / `iccUrl` options) were added in 6.x. The copy loop
+ * tolerates missing entries, so listing them is harmless but pointless; they
+ * are omitted here to keep the list honest about what 4.10.38 ships.
+ */
+const DIRECTORIES = ['cmaps', 'standard_fonts']
 const FILES = ['build/pdf.worker.min.mjs']
 
 async function main() {

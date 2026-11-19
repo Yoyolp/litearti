@@ -25,7 +25,7 @@
 
 ## 一句话概括这个项目
 
-一个 **Tauri 2 + Vue 3** 的本地优先阅读器：读本地文件（TXT/PDF/EPUB/音频），联网只为了从用户自己添加的「源」里取内容，外加一个 Bangumi 资料板块。
+一个 **Tauri 2 + Vue 3** 的本地优先阅读器：读本地文件（TXT/PDF/EPUB/音频），联网只为了从用户自己添加的「源」里取内容，外加一个 Bangumi 资料板块。**同一个代码库可以编译出 Windows 桌面版和 Android APK**。
 
 **三条贯穿全局的约束**，其余所有设计都是从它们推出来的：
 
@@ -42,13 +42,14 @@
 | | |
 |---|---|
 | 前端运行时依赖 | **6 个**（vue, pinia, @tauri-apps/api, plugin-dialog, hls.js, pdfjs-dist） |
-| Rust 直接依赖 | **7 个**（tauri, plugin-dialog, serde, serde_json, uuid, encoding_rs, reqwest） |
-| Rust 模块 | 18 个文件 |
+| Rust 直接依赖 | **11 个核心** + 平台条件依赖（见 01-structure） |
+| Rust 模块 | 20 个 + `sniff/` 子目录 4 个 |
 | 前端 `src` 子目录 | 13 个 |
 | 视图 | 13 个 |
-| 验证脚本 | **34 个 `verify-*` + 4 个 `shots-*`** |
-| 单元测试 | 167 个（`cargo test`） |
+| 验证脚本 | **35 个 `verify-*` + 4 个 `shots-*`** |
+| 单元测试 | 176 个（`cargo test`） |
 | 设计 token | 全部在 `src/styles/tokens.css`，组件里没有硬编码数值 |
+| 支持平台 | Windows（x64）、Android（arm64 / armv7 / x86 / x86_64） |
 
 依赖数量是刻意控制的：加一个 crate 或 npm 包要在 `docs/` 里有理由。
 

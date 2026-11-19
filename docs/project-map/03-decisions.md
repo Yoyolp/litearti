@@ -395,8 +395,84 @@
 | 事项 | 状态 |
 |---|---|
 | 剧集下载（离线观看） | 计划中，分两步的第二步 |
-| Android 支持 | 用户明确暂缓：基本功能未完成，贸然多平台会引入不可预测的问题 |
 | 弹幕 | **受阻**：弹弹play 需要 AppId + 签名，Kazumi 的凭证是 CI 注入的私密值，不能拿来用 |
 | 设置页的导出配置 / 打开数据目录按钮 | 界面和文案在，后端未接 |
 | 源改名「书源」→「源」 | 已做 |
 | `login.rs` 的 `unused_mut` 警告 | 既存，未清 |
+| 手机端封面（DNS 污染） | 代码已优化并发与超时；域名不通属环境问题，见 `docs/android.md` §5 |
+| 嗅探移植到 Android | 仅 Windows 实现；`shouldInterceptRequest` 可行但属新功能 |
+
+> 「Android 支持」曾在这里标注为用户明确暂缓。现已完成移植，见 [`docs/android.md`](../android.md)。
+
+---
+
+## 十一、Android 移植
+
+完整技术细节在 [`docs/android.md`](../android.md)，这里只记**决定和拒绝了什么**。
+
+### 11.1 TLS 用内置根证书，不用平台验证器
+
+**决定**：`tls.rs` 用 `webpki-roots` 自建 `ClientConfig`，经 `tls_backend_preconfigured` 注入。
+
+**为什么**：reqwest 的 `rustls` feature 在 Android 上走 `rustls-platform-verifier`，它要调 JVM 的 `TrustManager`；未初始化就发请求会**直接 abort 进程**（`Expect rustls-platform-verifier to be initialized`）。
+
+**拒绝了**：
+
+- ❌ **接入官方 AAR** —— 需往 Gradle 加 GitHub 上的 Maven 仓库，该仓库在目标网络下不可达；还要维护 Kotlin 组件与版本同步
+- ❌ **改用 `native-tls`** —— Android 上引入 OpenSSL 交叉编译，破坏「一条命令出包」
+- ❌ **去掉联网功能** —— 应用的核心就是从源取内容
+
+**代价**：静态根证书列表，用户自建企业 CA 不被信任。对公网书源可接受。
+
+### 11.2 PDF 降级到 4.10.38
+
+**决定**：`pdfjs-dist` 从 6.4.299 降到 **4.10.38**。
+
+**为什么**：6.x 用了 `Map.getOrInsertComputed`（Chrome 140+），目标设备 WebView 是 134，PDF 直接打不开。`legacy/` 构建也用了同类 API，polyfill 补不完。
+
+**拒绝了**：
+
+- ❌ **继续补 polyfill** —— 第一轮补了 `toHex`，第二轮又冒出 `getOrInsertComputed`，没有尽头
+- ❌ **要求用户升级 WebView** —— 把风险转嫁给用户，部分设备无法升级
+
+**代价**：失去 6.x 的 wasm/icc 渲染路径。**换来的是 4.x 自己对 `Uint8Array` 新方法做 feature-detect**，一行 polyfill 都不需要，且包体积小了约 115 KB。
+
+### 11.3 窄屏保留侧栏，默认折叠成图标栏
+
+**决定**：`< 719px` 时侧栏**不变成底栏**，只把默认状态改成折叠（56px 图标栏）。
+
+**为什么**：四个入口都常用，底栏占用永久横向空间且改变应用视觉身份；而「折叠成 rail」是桌面**本来就有的机制**，只是默认值不同。
+
+**拒绝了**：
+
+- ❌ **底栏导航** —— 第一版实现过，被否：改变了原有设计
+- ❌ **抽屉** —— 隐藏当前位置，且每次导航多一次点击
+- ❌ **保持 208px 不折叠** —— 360px 屏幕上内容区只剩 152px，不可用
+
+**细节**：用户手动展开过则尊重其选择（`readCollapsed` 先读 localStorage，无值才看视口宽度）。
+
+### 11.4 全屏用 CSS 兜底
+
+**决定**：先试 Fullscreen API，拿不到状态就用 `position: fixed` 的 CSS 伪全屏。
+
+**为什么**：wry 的 Android 实现 `onShowCustomView` 第一行就是 `callback.onCustomViewHidden()`，`requestFullscreen()` **必然无效且不报错**（promise 照常 resolve）。
+
+**拒绝了**：
+
+- ❌ **不提供全屏按钮** —— 手机上横屏看视频是刚需
+- ❌ **改 wry 源码** —— fork 上游 crate 的维护成本过高
+
+**判据**：不能只看 promise 有没有 resolve，要看 `document.fullscreenElement` 是否真的存在。
+
+### 11.5 封面限流用原子计数，不用 tokio 信号量
+
+**决定**：`COVER_IN_FLIGHT: AtomicUsize` + `CoverSlot` 的 `Drop` 释放槽位。
+
+**为什么**：`tokio` 在本项目是 **dev-dependency**（只有测试需要 runtime）。为一个限流器把它提升为正式依赖不划算。
+
+**拒绝了**：
+
+- ❌ **加 `tokio` 正式依赖** —— 为一个计数器引入整个运行时
+- ❌ **不限流** —— 80 张卡片同时请求会把连接池占满，每张都等满超时
+
+**注意**：这是本项目**唯一**允许忙等的地方，因为等待上限是一次封面下载，且在 worker 线程而非 UI 线程。

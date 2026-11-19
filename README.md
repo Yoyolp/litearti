@@ -34,6 +34,19 @@ pnpm app:build    # 构建 release 二进制（不打包安装程序）
 
 **环境要求**：Node ≥ 20、pnpm ≥ 8、Rust ≥ 1.77、Windows 上需要 MSVC Build Tools 和 WebView2 运行时（Win10/11 通常已内置）。
 
+### 构建 Android APK
+
+```bash
+pnpm tauri android init                    # 首次：生成 src-tauri/gen/android/
+pwsh scripts/build-android.ps1 -Release    # 出签名 APK
+```
+
+产物在 `release-android/litearti-<version>-<abi>.apk`。
+
+> **Windows 上不要直接用 `pnpm tauri android build`**：它把 `.so` 以符号链接放进 jniLibs，需要开发者模式或 `SeCreateSymbolicLinkPrivilege`，否则会在编完 Rust 之后失败。脚本改用普通复制绕开它。
+>
+> 环境要求（JDK 21、NDK 27.2、SDK 37、Rust targets）和全部踩坑记录见 [`docs/android.md`](docs/android.md)。
+
 ---
 
 ## 支持的格式
@@ -144,8 +157,10 @@ pnpm app:build    # 构建 release 二进制（不打包安装程序）
 
 | 文档 | 内容 |
 |---|---|
+| [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md) | **维护速查**：我要做什么看哪里、三条约束、Android 五条铁律、故障→原因对照 |
 | [`docs/project-map/`](docs/project-map/README.md) | **代码审计入口**：目录职责、分层与边界、决定记录（含被拒绝的方案）、审计清单与已知弱点 |
 | [`docs/project-overview.md`](docs/project-overview.md) | **项目详细介绍**：架构、数据模型、技术选型理由、限制与后续方向 |
+| [`docs/android.md`](docs/android.md) | **Android 移植**：环境、构建脚本、平台差异、六个真实踩过的坑、未解决问题、维护清单 |
 | [`docs/bangumi.md`](docs/bangumi.md) | 发现：Bangumi 镜像、端点形状差异、匹配策略、封面缓存与负缓存 |
 | [`docs/sniffing.md`](docs/sniffing.md) | WebView 嗅探：CDP 采集、label 安全边界、三处只能实机踩出来的坑 |
 | [`docs/stream-proxy.md`](docs/stream-proxy.md) | 播放代理：URL 形状、m3u8 重写、两种 CORS 陷阱、平台差异 |

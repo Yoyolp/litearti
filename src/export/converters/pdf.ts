@@ -51,8 +51,8 @@ export async function pdfToText(input: ConvertInput): Promise<string> {
     cMapUrl: '/pdfjs/cmaps/',
     cMapPacked: true,
     standardFontDataUrl: '/pdfjs/standard_fonts/',
-    wasmUrl: '/pdfjs/wasm/',
-    iccUrl: '/pdfjs/iccs/',
+    // `wasmUrl` / `iccUrl` are pdf.js 6 options; this project pins 4.10.38 for
+    // WebView compatibility (see the viewer for the full reason).
   })
 
   const doc = await task.promise

@@ -171,4 +171,53 @@ watch(() => props.entry.id, () => void resolve(), { immediate: true })
   line-height: var(--leading-normal);
   color: var(--ink-secondary);
 }
+
+/* ==========================================================================
+   Phone layout
+
+   The reader is full-screen (no sidebar), so it owns the insets itself: without
+   the top inset the title sits under the status bar / camera cutout, and
+   without the side insets text runs under a curved edge in landscape.
+   ========================================================================== */
+
+@media (max-width: 719px) {
+  .reader-header {
+    /* Tighter horizontal padding than desktop, plus the notch clearance. */
+    padding: var(--space-2) var(--content-pad);
+    padding-top: calc(var(--space-2) + var(--safe-top));
+    padding-left: calc(var(--content-pad) + var(--safe-left));
+    padding-right: calc(var(--content-pad) + var(--safe-right));
+    gap: var(--space-2);
+    /* No wrap: the title truncates instead, so the header height stays fixed
+       and the viewer is not pushed down by a long filename. */
+    align-items: center;
+  }
+
+  /* The back control is the primary way out of a full-screen screen; give it
+     a real touch target rather than the text-sized one it gets on desktop. */
+  .back {
+    min-width: var(--hit-touch);
+    min-height: var(--hit-touch);
+    margin-left: calc(var(--space-1) * -1);
+    justify-content: flex-start;
+    font-size: var(--text-base);
+  }
+
+  .identity {
+    /* Metadata moves under the title's baseline budget: on a phone the
+       horizontal space is better spent on the title itself. */
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    flex: 1;
+  }
+
+  .reader-title {
+    max-width: 100%;
+  }
+
+  .reader-meta {
+    font-size: var(--text-xs);
+  }
+}
 </style>

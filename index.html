@@ -2,7 +2,18 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- `viewport-fit=cover` is what lets the layout reach under a notch, and is
+         required for `env(safe-area-inset-*)` to report real values. The insets
+         are applied in base.css so content is never hidden behind a gesture bar. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <!-- Match the app background so the WebView's own backdrop does not flash
+         white during launch on a dark device theme. -->
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#161616" media="(prefers-color-scheme: dark)" />
     <title>litearti</title>
   </head>
   <body>

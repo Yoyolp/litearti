@@ -299,7 +299,7 @@ pub fn decode_target(encoded: &str) -> AppResult<String> {
 pub async fn fetch_stream(request: StreamRequest) -> AppResult<StreamResponse> {
     let url = ensure_web_url(&request.target)?;
 
-    let client = reqwest::Client::builder()
+    let client = crate::tls::builder()
         .timeout(REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 5 {

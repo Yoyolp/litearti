@@ -13,9 +13,26 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Passed through from `tauri` so a release build can put the frontend *inside*
+# the binary. Without it `tauri-build` emits `cfg(dev)` and the generated context
+# keeps `build.devUrl` (http://localhost:1420) instead of the bundled assets — the
+# app then installs fine and opens to "Failed to request ..." on a phone that has
+# no dev server. `tauri android build` supplies this feature itself; a direct
+# `cargo build` has to ask for it, hence the forwarding entry.
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
+# Android's document picker hands back a `content://` URI, which `std::fs` cannot
+# open — the bytes belong to a system provider, not to a path. This plugin is the
+# one place that resolves such a URI into a readable file descriptor. On desktop
+# it is a plain `open`, so the same call site works on both.
+tauri-plugin-fs = "2"
+# Opening a link in the system browser. Desktop shells out to the OS launcher,
+# Android has no equivalent process, so the platform Intent is used instead.
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -23,7 +40,26 @@ encoding_rs = "0.8"
 # HTTP for book sources. `rustls` avoids a system OpenSSL dependency, which
 # keeps the binary self-contained (the project already ships as a single exe).
 # Note: reqwest 0.13 renamed the feature from `rustls-tls` to `rustls`.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "http2"] }
+#
+# `system-proxy` is **not** optional in practice: it is part of reqwest's default
+# feature set, and `default-features = false` above silently dropped it. Without
+# it the app ignores the system HTTP proxy entirely, so on any machine (or phone)
+# that reaches the network through a proxy, every request goes direct and fails —
+# which is exactly how Bangumi covers appeared to "never load" while the API
+# itself worked.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "http2", "system-proxy"] }
+
+# On Android, reqwest's `rustls` feature relies on `rustls-platform-verifier`,
+# which calls into the JVM's trust manager. That verifier aborts the process with
+# "Expect rustls-platform-verifier to be initialized" unless a Kotlin component is
+# wired into the Gradle build and initialized at startup — and that component is
+# published only as an AAR in a GitHub-hosted Maven repository. Building our own
+# `ClientConfig` from `webpki-roots` (the Mozilla root store, compiled in) avoids
+# the JVM entirely, so the app works on Android with no extra native setup.
+# The tradeoff is a static root list: OS-trusted enterprise/private CAs are not
+# picked up. For a reader that talks to public book sources that is acceptable.
+webpki-roots = "1"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
 
 [dev-dependencies]
 # Only the async tests in `net.rs` need a runtime; production code runs inside
@@ -38,6 +74,16 @@ tokio = { version = "1", features = ["macros", "rt"] }
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows-core = "0.62"
+
+# The Android document picker hands back a `content://` URI whose last path
+# segment is an opaque provider id (`msf:1000000123`), not a filename. The real
+# name — and therefore the book's title and format — only exists behind the
+# ContentResolver, so it has to be asked for over JNI. `ndk-context` is already
+# initialized by tao at startup, so no extra setup is needed to reach the
+# Activity; the version must match tao's so the `jni` types unify.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 [profile.release]
 codegen-units = 1

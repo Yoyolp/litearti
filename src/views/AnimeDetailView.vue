@@ -64,6 +64,18 @@ const roads = computed(() => detail.value?.roads ?? [])
 const currentRoad = computed(() => roads.value[roadIndex.value] ?? null)
 const episodes = computed(() => currentRoad.value?.episodes ?? [])
 
+/**
+ * The title to show.
+ *
+ * The detail page's selector fails often — sites change their markup, and some put
+ * the title in a place the rule does not describe. When it does, `videoDetail` now
+ * returns an empty string rather than a placeholder, so this falls back to the title
+ * that arrived with the item: from the search result, or from the discover page's
+ * match. That one was good enough to open this page, so it is good enough to label
+ * it.
+ */
+const title = computed(() => detail.value?.title || props.item.title)
+
 function ensureEngine(): SourceEngine | null {
   const current = source.value
   if (!current) return null
@@ -169,7 +181,10 @@ async function addToLibrary(): Promise<void> {
         episodeCount: episodes.value.length || null,
         invalid: false,
       },
-      info.title || props.item.title,
+      // The computed title, not `info.title`: that field is empty whenever the
+      // detail page's selector misses, and `'<empty>' || fallback` is exactly the
+      // expression that must be the single source of truth for the label.
+      title.value,
     )
     // Push the entry into the running store. `add_online` only writes the file; the
     // library reads it once at startup, so without this the title would exist on
@@ -230,17 +245,17 @@ watch(
             v-if="detail.cover && !coverFailed"
             class="hero-image"
             :src="detail.cover"
-            :alt="detail.title"
+            :alt="title"
             referrerpolicy="no-referrer"
             @error="coverFailed = true"
           />
           <span v-else class="hero-fallback" aria-hidden="true">
-            {{ detail.title.charAt(0) }}
+            {{ title.charAt(0) }}
           </span>
         </div>
 
         <div class="hero-info">
-          <h1 class="hero-title">{{ detail.title }}</h1>
+          <h1 class="hero-title">{{ title }}</h1>
           <p v-if="detail.author" class="hero-author">{{ detail.author }}</p>
           <p class="hero-count">
             {{ t('source.roadCount', { roads: roads.length, episodes: episodes.length }) }}

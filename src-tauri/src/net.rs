@@ -161,7 +161,7 @@ pub async fn fetch(request: SourceRequest, cookie: Option<&str>) -> AppResult<So
             .clamp(1_000, MAX_TIMEOUT_MS),
     );
 
-    let client = reqwest::Client::builder()
+    let client = crate::tls::builder()
         .timeout(timeout)
         // Redirects are followed, but each hop is re-validated by the policy
         // below; reqwest's own limit also caps the chain.
@@ -334,7 +334,7 @@ mod tests {
             .build()
             .expect("runtime");
         let error = runtime.block_on(async {
-            reqwest::Client::builder()
+            crate::tls::builder()
                 .timeout(Duration::from_millis(200))
                 .build()
                 .expect("client")

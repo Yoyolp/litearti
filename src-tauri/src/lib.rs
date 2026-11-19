@@ -15,12 +15,15 @@ mod sniff;
 mod sources;
 mod stream;
 mod text;
+mod tls;
 
-use error::AppResult;
+mod android_fs;
+
+use error::{AppError, AppResult};
 use library::Library;
 use model::{DecodedText, Entry, ImportReport};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -58,10 +61,95 @@ fn library_list(state: State<'_, AppState>) -> AppResult<Vec<Entry>> {
     with_library(&state, |library| library.load())
 }
 
+/// Import files the person picked.
+///
+/// Two kinds of value arrive here, because Android's document picker and a
+/// desktop file dialog produce different things:
+///
+/// - a **filesystem path** (`C:\…`, `/storage/…`), which `fs::copy` handles;
+/// - a **`content://` URI**, whose bytes belong to a ContentProvider and have to
+///   be streamed out through the ContentResolver instead.
+///
+/// Splitting them here (rather than making the frontend decide) keeps the
+/// platform difference in the one place that already knows about paths.
 #[tauri::command]
-fn library_import(state: State<'_, AppState>, paths: Vec<String>) -> AppResult<ImportReport> {
-    let sources: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    with_library(&state, |library| library.import_many(&sources))
+fn library_import(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> AppResult<ImportReport> {
+    let mut plain: Vec<PathBuf> = Vec::new();
+    let mut streams: Vec<library::StreamImport> = Vec::new();
+    let mut failed: Vec<model::ImportFailure> = Vec::new();
+
+    for path in paths {
+        if !android_fs::is_content_uri(&path) {
+            plain.push(PathBuf::from(path));
+            continue;
+        }
+        // A URI that cannot be opened is one failed file, not a failed batch:
+        // the person picked several and the rest should still import.
+        match stream_import_for(&app, &path) {
+            Ok(item) => streams.push(item),
+            Err(error) => failed.push(model::ImportFailure {
+                source_path: path,
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    let mut report = if plain.is_empty() {
+        ImportReport {
+            imported: Vec::new(),
+            duplicates: 0,
+            failed: Vec::new(),
+        }
+    } else {
+        with_library(&state, |library| library.import_many(&plain))?
+    };
+
+    if !streams.is_empty() {
+        let extra = with_library(&state, |library| library.import_many_streams(streams))?;
+        report.imported.extend(extra.imported);
+        report.duplicates += extra.duplicates;
+        failed.extend(extra.failed);
+    }
+
+    report.failed.extend(failed);
+    Ok(report)
+}
+
+/// Turn one `content://` URI into an import the library can perform.
+///
+/// The file is opened once here to learn its size (needed for duplicate
+/// detection) and the name is asked of the provider (needed for the extension
+/// and the title). The closure then streams the bytes when the library has
+/// chosen a destination.
+fn stream_import_for(
+    app: &tauri::AppHandle,
+    uri: &str,
+) -> AppResult<library::StreamImport> {
+    let name = android_fs::display_name(uri).unwrap_or_else(|| {
+        // No DISPLAY_NAME: keep the URI's tail so the label is at least
+        // recognizable, and let the extension stay empty rather than guessed.
+        uri.rsplit('/').next().unwrap_or_default().to_string()
+    });
+
+    // `fstat` on the descriptor the provider handed over. Some providers report
+    // an unknown size as 0; that only weakens duplicate detection, and the copy
+    // below still writes every byte.
+    let source = android_fs::open_for_read(app, uri)?;
+    let size = source.metadata().map(|meta| meta.len()).unwrap_or(0);
+    drop(source);
+
+    let app = app.clone();
+    let uri_owned = uri.to_string();
+    Ok(library::StreamImport {
+        name,
+        label: uri.to_string(),
+        size,
+        write: Box::new(move |target| android_fs::copy_to(&app, &uri_owned, target)),
+    })
 }
 
 #[tauri::command]
@@ -261,21 +349,37 @@ fn source_progress_save(app: tauri::AppHandle, progress: serde_json::Value) -> A
 
 /// Read a text file the person picked in a native dialog.
 ///
-/// Avoids adding `plugin-fs` for the one place the app needs to read an
-/// arbitrary file (importing a book source JSON). The path is always one the
-/// person chose; this is not a general-purpose file API.
+/// Avoids adding a general-purpose file API for the one place the app needs to
+/// read an arbitrary file (importing a book source JSON). The location is always
+/// one the person chose in a dialog.
+///
+/// Accepts both a path and a `content://` URI: on Android the picker only ever
+/// produces the latter, and `PathBuf::from` on such a string would fail with a
+/// confusing "no such file" instead of reading the document.
 #[tauri::command]
-fn read_picked_text_file(path: String) -> AppResult<String> {
-    sources::read_text_file(&PathBuf::from(path))
+fn read_picked_text_file(app: tauri::AppHandle, path: String) -> AppResult<String> {
+    if android_fs::is_content_uri(&path) {
+        return android_fs::read_text(&app, &path, sources::MAX_TEXT_FILE_BYTES);
+    }
+    sources::read_text_file(Path::new(&path))
 }
 
 /// Open a URL in the system browser.
 ///
 /// Used by the sources screen to visit a source's homepage. The webview must not
 /// navigate there itself — the app window would be replaced by the site.
+///
+/// Launching goes through `tauri-plugin-opener`: it maps to the default-browser
+/// association on desktop and to a `startActivity` Intent on Android, where
+/// `rundll32` / `xdg-open` do not exist.
 #[tauri::command]
-fn open_external(url: String) -> AppResult<()> {
-    external::open_in_browser(&url)
+fn open_external(app: tauri::AppHandle, url: String) -> AppResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let target = external::ensure_web_url(&url)?;
+    app.opener()
+        .open_url(target, None::<&str>)
+        .map_err(|error| AppError::Invalid(format!("无法打开浏览器：{error}")))
 }
 
 /// Fetch the weekly Bangumi calendar for a season.
@@ -419,6 +523,13 @@ async fn source_login_start(app: tauri::AppHandle, source_id: String) -> AppResu
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Reads a picked file. On Android the picker returns a `content://`
+        // URI and this is what resolves it to a descriptor; on desktop it is a
+        // plain file open. Only the read path is used, so the plugin's own
+        // broad file scope is never exposed to the frontend.
+        .plugin(tauri_plugin_fs::init())
+        // Opens links in the system browser (an Intent on Android).
+        .plugin(tauri_plugin_opener::init())
         // The playback proxy. Registered as an async scheme because every request
         // performs network I/O: a synchronous handler runs on the main thread and
         // would stall the UI for the duration of each segment fetch.

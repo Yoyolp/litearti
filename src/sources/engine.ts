@@ -498,7 +498,11 @@ export class SourceEngine {
     // `detail.title` is the book's title. Falling back to the search-field
     // selector is wrong (that one runs against a *list item*), so the fallback
     // is the caller-supplied item title, handled by the view.
-    const title = (await this.evaluateOne(config.title, payload)) ?? '未命名'
+    //
+    // Empty string, **not** a placeholder like '未命名'. A placeholder here is a
+    // truthy string, so every caller's `title || knownTitle` silently keeps it and
+    // the UI shows "未命名" even though a perfectly good title arrived from search.
+    const title = (await this.evaluateOne(config.title, payload)) ?? ''
 
     const author =
       (await this.evaluateOne(config.author, payload)) ??
@@ -610,7 +614,9 @@ export class SourceEngine {
     const payload = { json, html: page.body, text: page.body }
     const detailConfig = this.source.detail
 
-    const title = (await this.evaluateOne(detailConfig.title, payload)) ?? '未命名'
+    // Empty rather than a placeholder: the view keeps the title it already has from
+    // the search result, which is more reliable than the detail page's selector.
+    const title = (await this.evaluateOne(detailConfig.title, payload)) ?? ''
     const author =
       (await this.evaluateOne(detailConfig.author, payload)) ??
       (await this.evaluateOne(this.source.search.fields.author, payload))
@@ -893,7 +899,11 @@ export class SourceEngine {
       throw new SelectorError('这个地址没有解析到章节，可能不是书籍目录页')
     }
     return {
-      title: detail.title === '未命名' ? (url.split('/').filter(Boolean).pop() ?? url) : detail.title,
+      // `detail()` now returns an empty title when its selector misses, so a plain
+      // `||` is enough. The old code compared against the literal '未命名', which
+      // only worked because the engine invented that string — a coupling that would
+      // break the moment anyone renamed it.
+      title: detail.title || (url.split('/').filter(Boolean).pop() ?? url),
       author: detail.author,
       cover: detail.cover,
       intro: detail.intro,

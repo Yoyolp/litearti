@@ -33,6 +33,17 @@ const engine = shallowRef<SourceEngine | null>(null)
 
 const source = computed(() => store.byId(props.sourceId))
 const chapters = computed(() => detail.value?.chapters ?? [])
+
+/**
+ * The title to show.
+ *
+ * `detail.title` is an optional selector, and plenty of sites do not have a stable
+ * one. When it misses, the engine now returns an empty string — so fall back to the
+ * title the item arrived with, which is the one that was good enough to reach this
+ * page. Without this the header renders blank, which reads as a broken page rather
+ * than a missing selector.
+ */
+const title = computed(() => detail.value?.title || props.item.title)
 /** Nodes the parser had to skip; shown so a short chapter list is explainable. */
 const diagnoses = computed(() => detail.value?.diagnoses ?? [])
 
@@ -140,17 +151,17 @@ onBeforeUnmount(() => {
             v-if="detail.cover && !coverFailed"
             class="hero-image"
             :src="detail.cover"
-            :alt="detail.title"
+            :alt="title"
             referrerpolicy="no-referrer"
             @error="coverFailed = true"
           />
           <span v-else class="hero-fallback" aria-hidden="true">
-            {{ detail.title.charAt(0) }}
+            {{ title.charAt(0) }}
           </span>
         </div>
 
         <div class="hero-info">
-          <h1 class="hero-title">{{ detail.title }}</h1>
+          <h1 class="hero-title">{{ title }}</h1>
           <p v-if="detail.author" class="hero-author">{{ detail.author }}</p>
           <p class="hero-count">{{ t('source.chapterCount', { count: chapters.length }) }}</p>
           <p v-if="detail.intro" class="hero-intro">{{ detail.intro }}</p>

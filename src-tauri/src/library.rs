@@ -24,6 +24,21 @@ impl Default for LibraryFile {
 
 const LIBRARY_VERSION: u32 = 1;
 
+/// One import that is not a path on this filesystem.
+///
+/// `write` receives the destination the library chose and must put the bytes
+/// there. Keeping the byte-moving in a closure (rather than passing a `&[u8]`)
+/// means a large audio file streams to disk instead of sitting in memory.
+pub struct StreamImport {
+    /// Original file name, used for the extension and the default title.
+    pub name: String,
+    /// What to record as `source_path` — the URI, a readable hint for the person.
+    pub label: String,
+    /// Size in bytes, used for duplicate detection.
+    pub size: u64,
+    pub write: Box<dyn FnOnce(&Path) -> AppResult<()>>,
+}
+
 /// The managed library: a metadata file plus a `files/` directory holding the
 /// imported copies.
 ///
@@ -124,20 +139,58 @@ impl Library {
             )));
         }
 
-        let size = metadata.len();
-        let source_path = source.to_string_lossy().to_string();
+        let name = source
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.import_stream(
+            &name,
+            &source.to_string_lossy(),
+            metadata.len(),
+            existing,
+            title_override,
+            |target| {
+                fs::copy(source, target)?;
+                Ok(())
+            },
+        )
+    }
 
-        // Duplicate = same original path and same size. Cheap, predictable, and
+    /// Import from something that is not necessarily a path on this filesystem.
+    ///
+    /// This is what the Android document picker needs: it hands back a
+    /// `content://` URI whose bytes live behind a ContentProvider, so there is no
+    /// path to `fs::copy` from. The caller supplies the original file name (asked
+    /// of the provider), a label to record as `source_path`, and a closure that
+    /// writes the bytes to the destination this method has already chosen.
+    ///
+    /// Streaming rather than `&[u8]` on purpose: a lossless audio file can be
+    /// hundreds of megabytes, and buffering that in memory to copy it is a good
+    /// way to be killed by the Android low-memory killer.
+    ///
+    /// `name` may be empty when the provider would not say; the extension is then
+    /// empty too, which the frontend treats as "no viewer" rather than guessing.
+    pub fn import_stream(
+        &self,
+        name: &str,
+        label: &str,
+        size: u64,
+        existing: &[Entry],
+        title_override: Option<&str>,
+        write: impl FnOnce(&Path) -> AppResult<()>,
+    ) -> AppResult<Option<Entry>> {
+        // Duplicate = same origin label and same size. Cheap, predictable, and
         // it never mistakes two different files for one another.
         let duplicate = existing
             .iter()
-            .any(|e| e.source_path == source_path && e.size == size);
+            .any(|e| e.source_path == label && e.size == size);
         if duplicate {
             return Ok(None);
         }
 
         let id = uuid::Uuid::new_v4().to_string();
-        let extension = source
+        let name_path = Path::new(name);
+        let extension = name_path
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
@@ -148,13 +201,15 @@ impl Library {
         };
 
         let target = self.files_dir().join(&stored_name);
-        fs::copy(source, &target)?;
+        write(&target)?;
+
+        let source_path = label.to_string();
 
         let title = title_override
             .map(|title| title.trim().to_string())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| {
-                source
+                name_path
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .filter(|s| !s.trim().is_empty())
@@ -181,6 +236,60 @@ impl Library {
     /// Import many files, reporting partial failure instead of aborting.
     pub fn import_many(&self, sources: &[PathBuf]) -> AppResult<ImportReport> {
         self.import_many_titled(sources, None)
+    }
+
+    /// Import many non-path sources (Android document URIs, mostly).
+    ///
+    /// Batch behaviour mirrors [`Self::import_many_titled`]: one bad file is
+    /// reported in `failed` instead of aborting the run, and a failed metadata
+    /// write undoes the copies it made.
+    ///
+    /// The per-item writer is boxed rather than generic because each item needs
+    /// its own closure, and a `Vec` cannot hold closures of distinct unboxed
+    /// types.
+    pub fn import_many_streams(&self, items: Vec<StreamImport>) -> AppResult<ImportReport> {
+        let mut entries = self.load()?;
+        let mut imported = Vec::new();
+        let mut duplicates = 0usize;
+        let mut failed = Vec::new();
+
+        for item in items {
+            let StreamImport {
+                name,
+                label,
+                size,
+                write,
+            } = item;
+            match self.import_stream(&name, &label, size, &entries, None, write) {
+                Ok(Some(entry)) => {
+                    entries.push(entry.clone());
+                    imported.push(entry);
+                }
+                Ok(None) => duplicates += 1,
+                Err(error) => failed.push(ImportFailure {
+                    source_path: label,
+                    reason: error.to_string(),
+                }),
+            }
+        }
+
+        if !imported.is_empty() {
+            if let Err(error) = self.save(&entries) {
+                for entry in &imported {
+                    let path = self.path_of(entry);
+                    if path.exists() {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+                return Err(error);
+            }
+        }
+
+        Ok(ImportReport {
+            imported,
+            duplicates,
+            failed,
+        })
     }
 
     /// Import many files, optionally overriding the display title.

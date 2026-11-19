@@ -169,6 +169,65 @@
      lists. Grouping screens (the source list) need to read as a separator at a
      glance, without becoming a border around every card. */
   --line-section: #e2e2e2;
+
+  /* --- Safe areas --------------------------------------------------------
+     Notches and gesture bars. `env()` reports 0px on a desktop browser and on
+     devices without insets, so these need no separate desktop value — they
+     simply collapse to nothing where there is nothing to dodge.
+     `viewport-fit=cover` in index.html is what makes them non-zero. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  /* --- Touch targets -----------------------------------------------------
+     A finger needs more room than a cursor. Controls keep their desktop
+     geometry above the breakpoint and grow to this below it. */
+  --hit-touch: 44px;
+}
+
+/* --------------------------------------------------------------------------
+   Coarse pointers (phones, tablets)
+
+   Keyed on pointer type rather than width: a touchscreen laptop should get the
+   larger hit areas even at a wide viewport, and a narrow desktop window should
+   not lose its compact controls. Width-based layout changes live in the
+   component styles; this block only enlarges the things you tap.
+   -------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  :root {
+    --control-md: 40px;
+    --control-lg: 44px;
+    --hit-min: var(--hit-touch);
+    --sidebar-item-height: var(--hit-touch);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Narrow viewports (phones)
+
+   Every screen insets its content with `--content-pad`, and the page shells cap
+   themselves at `--shell-max`. Overriding those two tokens here resizes all of
+   them at once, which is why no screen needed its own breakpoint for padding.
+   The sidebar's own transformation lives in AppSidebar.vue.
+
+   719px matches the breakpoint used there: below it, the 208px sidebar and a
+   readable content column cannot both fit.
+   -------------------------------------------------------------------------- */
+@media (max-width: 719px) {
+  :root {
+    /* 16px is the standard phone gutter. The desktop 32px wastes a third of a
+       narrow screen on margins. */
+    --content-pad: var(--space-4);
+    --shell-pad: var(--space-4);
+    --space-7: 32px;
+    --space-8: 40px;
+    --space-9: 56px;
+    /* Cards can be narrower when the grid is two-up on a phone. */
+    --card-min-width: 104px;
+    --grid-gap: var(--space-3);
+    --grid-gap-roomy: var(--space-4);
+  }
 }
 
 /* Dark theme redefines only the ink/surface ramp; every other token is

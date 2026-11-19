@@ -1,56 +1,33 @@
-//! Opening a URL in the system browser.
+//! Deciding what counts as "a link worth opening".
 //!
 //! A book source has a homepage, and "go look at this site" is a legitimate
 //! thing to want from the sources screen. Doing it in the webview would be
 //! wrong — the app's own window would navigate away — so the URL is handed to
-//! the OS instead.
+//! the platform instead.
+//!
+//! This module is only the *judgement*: which strings may be launched. The
+//! launching itself is `tauri-plugin-opener`, which the OS implements per
+//! platform (a `startActivity` Intent on Android, the default-browser
+//! association on Windows and macOS). Shelling out to `rundll32` or `xdg-open`
+//! was the previous approach and simply has no Android equivalent.
 //!
 //! Scope is deliberately narrow: only `http` and `https`, and only URLs that
 //! parse. A book source is user-supplied JSON, so this is the one place a bad
-//! value could otherwise become "launch an arbitrary program".
+//! value could otherwise become "launch an arbitrary app".
 
 use crate::error::{AppError, AppResult};
-use std::process::Command;
 
 /// Reject anything that is not a plain web URL.
-fn ensure_web_url(raw: &str) -> AppResult<reqwest::Url> {
+///
+/// Returns the normalized URL as a string, which is what the opener wants.
+pub fn ensure_web_url(raw: &str) -> AppResult<String> {
     let url = reqwest::Url::parse(raw.trim())
         .map_err(|error| AppError::Invalid(format!("URL 不合法：{error}")))?;
     match url.scheme() {
-        "http" | "https" => Ok(url),
+        "http" | "https" => Ok(url.as_str().to_string()),
         other => Err(AppError::Invalid(format!(
             "只支持 http/https，实际是 {other}"
         ))),
-    }
-}
-
-/// Open `url` in the platform's default browser.
-///
-/// The URL is passed as a separate argument to the launcher rather than through
-/// a shell string, so characters like `&` in a query string cannot start a
-/// second command.
-pub fn open_in_browser(url: &str) -> AppResult<()> {
-    let parsed = ensure_web_url(url)?;
-    let target = parsed.as_str();
-
-    #[cfg(target_os = "windows")]
-    let status = Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", target])
-        .status();
-
-    #[cfg(target_os = "macos")]
-    let status = Command::new("open").arg(target).status();
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let status = Command::new("xdg-open").arg(target).status();
-
-    match status {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(AppError::Invalid(format!(
-            "无法打开浏览器（退出码 {}）",
-            status.code().unwrap_or(-1)
-        ))),
-        Err(error) => Err(AppError::Invalid(format!("无法打开浏览器：{error}"))),
     }
 }
 
@@ -74,6 +51,7 @@ mod tests {
             "ms-settings:",
             "cmd:calc",
             "ftp://example.com",
+            "content://com.android.providers.downloads.documents/document/1",
         ] {
             assert!(ensure_web_url(url).is_err(), "{url} should be rejected");
         }

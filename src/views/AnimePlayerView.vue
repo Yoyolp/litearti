@@ -45,6 +45,16 @@ const props = defineProps<{
   onEnded?: () => void
 }>()
 
+/**
+ * Leaving the player.
+ *
+ * Emitted rather than handled here because the parent owns the navigation state;
+ * this component only knows that the person wants out. On desktop Escape does the
+ * same thing through App.vue's global handler, but a phone has no keyboard, so
+ * the button below is the only way back for most users.
+ */
+const emit = defineEmits<{ back: [] }>()
+
 const videoEl = ref<HTMLVideoElement | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
@@ -54,7 +64,6 @@ const duration = ref(0)
 const volume = ref(1)
 const muted = ref(false)
 const rate = ref(1)
-const fullscreen = ref(false)
 /** Whether the platform plays HLS without hls.js. */
 const nativeHls = ref(false)
 
@@ -344,18 +353,61 @@ function setRate(value: number): void {
   video.playbackRate = value
 }
 
-async function toggleFullscreen(): Promise<void> {
-  const shell = videoEl.value?.closest('.player') as HTMLElement | null
-  if (!shell) return
-  if (document.fullscreenElement) {
-    await document.exitFullscreen()
-  } else {
-    await shell.requestFullscreen()
-  }
-}
+/**
+ * Fullscreen state.
+ *
+ * Two mechanisms, because no single one works everywhere:
+ *
+ * - `nativeFullscreen` is the real Fullscreen API. It works on desktop and is what
+ *   gives a true OS-level fullscreen there.
+ * - `pseudoFullscreen` is a CSS-only mode that pins the player over the whole
+ *   viewport. It exists because **Android's WebView cannot do the real thing in
+ *   this stack**: wry's `RustWebChromeClient.onShowCustomView` calls
+ *   `callback.onCustomViewHidden()` immediately instead of adopting the custom
+ *   view, so a `requestFullscreen()` is granted and revoked in the same frame and
+ *   the button appears to do nothing at all.
+ *
+ * The CSS mode is used as the fallback rather than an error, so the control always
+ * does something the person can see.
+ */
+const nativeFullscreen = ref(false)
+const pseudoFullscreen = ref(false)
+
+/** True when either mechanism is active, for the button's label. */
+const fullscreen = computed(() => nativeFullscreen.value || pseudoFullscreen.value)
 
 function onFullscreenChange(): void {
-  fullscreen.value = !!document.fullscreenElement
+  nativeFullscreen.value = document.fullscreenElement !== null
+  // A real fullscreen supersedes the CSS one; leaving both on would strand the
+  // pseudo class on the element after the person exits native fullscreen.
+  if (nativeFullscreen.value) pseudoFullscreen.value = false
+}
+
+async function toggleFullscreen(): Promise<void> {
+  if (fullscreen.value) {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => undefined)
+    }
+    pseudoFullscreen.value = false
+    return
+  }
+
+  const shell = videoEl.value?.closest('.player') as HTMLElement | null
+  if (!shell) return
+
+  // Try the real API first: on desktop it gives a proper fullscreen window, and
+  // on Android it may one day be implemented. A rejected promise (or a grant that
+  // is revoked straight away) falls through to the CSS mode.
+  try {
+    await shell.requestFullscreen()
+    // Browsers resolve `requestFullscreen` even when the result is immediately
+    // discarded, so success is judged by the state, not by the promise.
+    if (document.fullscreenElement) return
+  } catch {
+    // Denied or unsupported — the CSS mode below covers both.
+  }
+
+  pseudoFullscreen.value = true
 }
 
 function onEnded(): void {
@@ -370,6 +422,15 @@ function onKeydown(event: KeyboardEvent): void {
   if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return
 
   switch (event.key) {
+    case 'Escape':
+      // Fullscreen is the platform's to unwind; if the picture is not
+      // fullscreen, Escape means "leave the player". Letting fullscreen handle
+      // it first avoids dropping the person out of the page when they only
+      // wanted their desktop back.
+      if (document.fullscreenElement) return
+      event.preventDefault()
+      emit('back')
+      break
     case ' ':
       event.preventDefault()
       togglePlay()
@@ -434,7 +495,7 @@ watch(
 </script>
 
 <template>
-  <div class="player">
+  <div class="player" :class="{ 'is-pseudo-fullscreen': pseudoFullscreen }">
     <div class="stage">
       <video
         ref="videoEl"
@@ -455,6 +516,23 @@ watch(
       <div v-if="loading && !error" class="overlay">
         <p class="overlay-text">{{ t('player.loading') }}</p>
       </div>
+
+      <!-- The way out. On a phone there is no Escape key, and this screen has no
+           other navigation chrome: without it the only exit is the system back
+           gesture, which is not discoverable and not present on every device.
+           Placed over the picture (top-left) because the bar below is dense and
+           the top of a video frame is conventionally empty at the start. -->
+      <button
+        class="btn back-overlay"
+        type="button"
+        :aria-label="t('player.back')"
+        @click="emit('back')"
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span>{{ t('player.back') }}</span>
+      </button>
 
       <div v-if="error" class="overlay is-error">
         <p class="overlay-title">{{ t('player.error.title') }}</p>
@@ -503,48 +581,54 @@ watch(
       </div>
 
       <div class="controls">
-        <button class="btn btn--tertiary" type="button" :aria-label="t('player.play')" @click="togglePlay">
-          {{ playing ? t('player.pause') : t('player.play') }}
-        </button>
-        <button class="btn btn--tertiary" type="button" @click="skip(-10)">
-          −10s
-        </button>
-        <button class="btn btn--tertiary" type="button" @click="skip(10)">
-          +10s
-        </button>
-
-        <label class="volume">
-          <button class="btn btn--tertiary" type="button" :aria-label="t('player.mute')" @click="toggleMute">
-            {{ muted || volume === 0 ? t('player.muted') : t('player.volume') }}
+        <!-- Transport: the three things a hand reaches for most. -->
+        <div class="control-group">
+          <button class="btn btn--tertiary" type="button" :aria-label="t('player.play')" @click="togglePlay">
+            {{ playing ? t('player.pause') : t('player.play') }}
           </button>
-          <input
-            class="volume-slider"
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            :value="muted ? 0 : volume"
-            :aria-label="t('player.volume')"
-            @input="setVolume(Number(($event.target as HTMLInputElement).value))"
-          />
-        </label>
+          <button class="btn btn--tertiary" type="button" :aria-label="t('player.skipBack')" @click="skip(-10)">
+            −10s
+          </button>
+          <button class="btn btn--tertiary" type="button" :aria-label="t('player.skipForward')" @click="skip(10)">
+            +10s
+          </button>
+        </div>
 
-        <label class="rate">
-          <select
-            class="rate-select"
-            :value="rate"
-            :aria-label="t('player.rate')"
-            @change="setRate(Number(($event.target as HTMLSelectElement).value))"
-          >
-            <option v-for="option in [0.5, 0.75, 1, 1.25, 1.5, 2]" :key="option" :value="option">
-              {{ option }}×
-            </option>
-          </select>
-        </label>
+        <!-- Environment: settings that change how it plays, not what plays. -->
+        <div class="control-group">
+          <label class="volume">
+            <button class="btn btn--tertiary" type="button" :aria-label="t('player.mute')" @click="toggleMute">
+              {{ muted || volume === 0 ? t('player.muted') : t('player.volume') }}
+            </button>
+            <input
+              class="volume-slider"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              :value="muted ? 0 : volume"
+              :aria-label="t('player.volume')"
+              @input="setVolume(Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
 
-        <button class="btn btn--tertiary fullscreen" type="button" @click="toggleFullscreen">
-          {{ fullscreen ? t('player.exitFullscreen') : t('player.fullscreen') }}
-        </button>
+          <label class="rate">
+            <select
+              class="rate-select"
+              :value="rate"
+              :aria-label="t('player.rate')"
+              @change="setRate(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option v-for="option in [0.5, 0.75, 1, 1.25, 1.5, 2]" :key="option" :value="option">
+                {{ option }}×
+              </option>
+            </select>
+          </label>
+
+          <button class="btn btn--tertiary fullscreen" type="button" @click="toggleFullscreen">
+            {{ fullscreen ? t('player.exitFullscreen') : t('player.fullscreen') }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -557,6 +641,29 @@ watch(
   height: 100%;
   min-height: 0;
   background: var(--surface-page);
+}
+
+/* CSS fullscreen.
+   Used where the Fullscreen API is unavailable (Android WebView — see the
+   `toggleFullscreen` comment). `position: fixed` with `inset: 0` covers the
+   viewport including area under the notch, which is the intent of fullscreen:
+   the picture, nothing else. `z-index` must beat the app shell's stacking, and
+   `background: #000` hides whatever is behind rather than letting it bleed
+   around the letterbox. */
+.player.is-pseudo-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  height: 100%;
+  background: #000;
+}
+
+/* The inset is not automatic: the shell is a flex column, and a fixed child
+   still resolves against the viewport, so the bottom bar would otherwise be
+   covered — which is correct for fullscreen, but the *content* must not slide
+   under the gesture bar. Applied to the control bar so buttons stay reachable. */
+.player.is-pseudo-fullscreen .bar {
+  padding-bottom: calc(var(--space-3) + var(--safe-bottom));
 }
 
 .stage {
@@ -590,6 +697,42 @@ watch(
   text-align: center;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
+}
+
+/* Both text and icon are white because this sits on video, not on a themed
+   surface — the design system's ink tokens would be unreadable over an
+   arbitrary frame. `backdrop-filter` keeps it legible over a bright scene
+   without resorting to an opaque box. */
+.back-overlay {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 2;
+  gap: var(--space-1);
+  height: var(--control-md);
+  padding: 0 var(--space-3);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: var(--radius-full);
+  backdrop-filter: blur(8px);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.back-overlay:hover {
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+}
+
+/* Clear the status bar / cutout: this button is the topmost thing on a
+   full-screen screen, so it owns the inset. */
+@media (max-width: 719px) {
+  .back-overlay {
+    top: calc(var(--space-3) + var(--safe-top));
+    left: calc(var(--space-3) + var(--safe-left));
+    /* A real touch target, and large enough that the label can show without
+       crowding the picture. */
+    height: var(--hit-touch);
+  }
 }
 
 .overlay-title {
@@ -630,8 +773,10 @@ watch(
   flex: none;
   display: flex;
   flex-direction: column;
+  /* Tighter than the page rhythm: this is a control cluster, and the grouping
+     inside each cluster already carries the separation. */
   gap: var(--space-2);
-  padding: var(--space-3) var(--content-pad) var(--space-4);
+  padding: var(--space-3) var(--content-pad) var(--space-3);
   border-top: 1px solid var(--line-subtle);
   background: var(--surface-page);
 }
@@ -665,10 +810,13 @@ watch(
 }
 
 /* The track uses a plain range input: it gets native keyboard and Touch support
-   for free, and the browser's own hit area is larger than it looks. */
+   for free, and the browser's own hit area is larger than it looks. The height
+   is set explicitly so the thumb is a finger-sized target rather than the
+   browser's hairline default. */
 .progress {
   flex: 1;
   min-width: 0;
+  height: var(--hit-min);
   accent-color: var(--surface-ink);
   cursor: pointer;
 }
@@ -678,6 +826,7 @@ watch(
   font-size: var(--text-xs);
   color: var(--ink-secondary);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .remaining {
@@ -685,11 +834,24 @@ watch(
   color: var(--ink-tertiary);
 }
 
+/* Controls as three groups instead of one wrapping row.
+   Left: transport (play, ±10s). Right: environment (mute, rate, fullscreen).
+   `space-between` puts them at opposite ends, which is where a hand expects
+   them; `flex-wrap` keeps the groups intact when they do not both fit, rather
+   than splitting a group across two lines. */
 .controls {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
   gap: var(--space-1);
+  min-width: 0;
 }
 
 .volume {
@@ -702,6 +864,26 @@ watch(
 .volume-slider {
   width: var(--volume-width);
   accent-color: var(--surface-ink);
+}
+
+/* Below the phone breakpoint the volume slider has no room; the mute toggle
+   still works and the hardware keys do the rest. */
+@media (max-width: 719px) {
+  .volume-slider {
+    display: none;
+  }
+
+  .bar {
+    /* The control bar is the last thing on screen, so it owns the bottom
+       inset: without this the buttons sit under the gesture bar. */
+    padding-bottom: calc(var(--space-3) + var(--safe-bottom));
+  }
+
+  /* Transport controls get real touch targets and the two skip buttons sit
+     next to play, which is the arrangement every video app uses. */
+  .controls .btn {
+    min-height: var(--hit-touch);
+  }
 }
 
 .rate-select {

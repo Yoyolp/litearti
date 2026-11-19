@@ -31,21 +31,38 @@ litearti/
 
 ```
 src-tauri/
-├── src/                 18 个 Rust 模块
-├── Cargo.toml           依赖（7 个直接依赖）
+├── src/                 20 个 Rust 模块（+ sniff/ 子目录 4 个 = 24 个文件）
+├── Cargo.toml           依赖（见下方「直接依赖」表）
 ├── tauri.conf.json      窗口、权限、asset 协议 scope
+├── capabilities/        前端可见的权限白名单
+├── gen/android/         Android 工程（`tauri android init` 生成，之后手工维护）
 └── build.rs             Tauri 构建脚本
 ```
+
+**直接依赖**（按用途分组，加一个都要有理由）：
+
+| 用途 | crate |
+|---|---|
+| 框架 | `tauri`、`tauri-plugin-dialog`、`tauri-plugin-fs`、`tauri-plugin-opener` |
+| 序列化 | `serde`、`serde_json` |
+| 杂项 | `uuid`、`encoding_rs` |
+| 网络 | `reqwest`（含 `system-proxy`）、`rustls`、`webpki-roots` |
+| 仅 Android | `jni`、`ndk-context` |
+| 仅 Windows | `webview2-com`、`windows-core` |
+| 仅测试 | `tokio` |
+
+`tokio` 是 **dev-dependency**：正常代码跑在 Tauri 已经提供的运行时里，只有 `net.rs` 的异步测试需要自己的 runtime。这条约束在写并发限流时踩到过——不能用 `tokio::sync::Semaphore`，只能用原子计数（见 `bangumi.rs` 的 `COVER_CONCURRENCY`）。
 
 ### `scripts/` — 验证与工具（**不打包进应用**）
 
 ```
 scripts/
-├── verify-*.mjs     34 个：断言行为，失败则 exit 1
+├── verify-*.mjs     35 个：断言行为，失败则 exit 1
 ├── shots-*.mjs       4 个：只生成截图，供人目视
 ├── fixtures/         真实抓取的页面与 JSON（测试数据）
 ├── stubs/            测试时替掉 @tauri-apps 的假模块
-└── *.mjs             生成工具（样例 EPUB/PDF、图标、legado 转换）
+├── build-android.ps1 Android 构建（绕开 Windows 符号链接限制，见 docs/android.md）
+└── *.mjs             生成工具（样例 EPUB/PDF、图标、legado 转换、pdfjs 资源同步）
 ```
 
 **`verify-` 和 `shots-` 的分工是刻意的**：断言能证明"功能对"，证明不了"看着对"。一个卡片可以逻辑全对但布局塌成 0 高度，只有眼睛能发现。
@@ -286,6 +303,8 @@ index.ts   所有文案（一个文件，键是闭合联合类型）
 | `proto.rs` | 自定义 scheme handler | **只服务 `main` 窗口**（防 SSRF） |
 | `bangumi.rs` | Bangumi 元数据 + 封面缓存 | 镜像、1 req/s、磁盘缓存、负缓存 |
 | `rules_mirror.rs` | 社区规则镜像 | **镜像编在 Rust 里，前端只传 id** |
+| `tls.rs` | TLS 配置（统一的 `ClientConfig`） | Android 上**必须**绕开平台验证器，见 docs/android.md |
+| `android_fs.rs` | Android 文件读取（`content://` → 字节） | URI 判定 + JNI 取文件名 + fs 插件读字节 |
 | `sniff/` | WebView 嗅探（CDP） | **仅 Windows**；`pick.rs` 是纯判断层 |
 
 **`sniff/` 的三层**：

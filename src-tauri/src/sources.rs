@@ -90,18 +90,24 @@ pub fn save_progress(root: &Path, value: &serde_json::Value) -> AppResult<()> {
 /// The size cap is not about disk protection but about honesty: a book source is
 /// kilobytes, and a 500 MB file picked by mistake should be rejected with a
 /// clear message rather than loaded into memory and then fail to parse.
-pub fn read_text_file(path: &Path) -> AppResult<String> {
-    const MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Cap on a picked text file, in bytes.
+///
+/// Not about disk protection but about honesty: a book source is kilobytes, and
+/// a 500 MB file picked by mistake should be rejected with a clear message
+/// rather than loaded into memory and then fail to parse. Shared with the
+/// Android reader so both paths enforce the same limit.
+pub const MAX_TEXT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
+pub fn read_text_file(path: &Path) -> AppResult<String> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
         return Err(AppError::Invalid(format!("{} 不是文件", path.display())));
     }
-    if metadata.len() > MAX_BYTES {
+    if metadata.len() > MAX_TEXT_FILE_BYTES {
         return Err(AppError::Invalid(format!(
             "文件过大（{} 字节），上限 {} 字节",
             metadata.len(),
-            MAX_BYTES
+            MAX_TEXT_FILE_BYTES
         )));
     }
 

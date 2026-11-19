@@ -106,9 +106,31 @@ const resolveError = ref<string | null>(null)
 /** Collapse state persists: a person who prefers the rail should keep it. */
 const collapsed = ref(readCollapsed())
 
+/**
+ * Is the viewport narrow enough that the full sidebar would crowd the content?
+ *
+ * Keyed on the same 719px breakpoint the styles use. Read once at startup rather
+ * than watched: this only decides the *initial* state, and a live listener would
+ * fight the person's own toggle as soon as they rotated the device.
+ */
+function isNarrowViewport(): boolean {
+  try {
+    return window.matchMedia('(max-width: 719px)').matches
+  } catch {
+    return false
+  }
+}
+
 function readCollapsed(): boolean {
   try {
-    return localStorage.getItem(COLLAPSE_KEY) === '1'
+    const stored = localStorage.getItem(COLLAPSE_KEY)
+    // An explicit choice always wins, in both directions: someone who expanded
+    // the sidebar on a phone should not have it snap shut on the next launch.
+    if (stored === '1') return true
+    if (stored === '0') return false
+    // No preference yet: on a phone the full 208px sidebar would leave ~150px
+    // for content, so start in the rail. On desktop, full width is the default.
+    return isNarrowViewport()
   } catch {
     return false
   }
@@ -582,6 +604,7 @@ onMounted(() => {
           :start-at="resumeAt"
           :on-progress="onPlayerProgress"
           :on-ended="playNextEpisode"
+          @back="closePlayer"
         />
 
         <!-- Resolving a media URL is visible: it is a network round trip and can
@@ -761,5 +784,24 @@ onMounted(() => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/* ==========================================================================
+   Narrow viewports
+
+   The sidebar stays the sidebar; it just starts collapsed to its icon rail (see
+   AppSidebar.vue). App.vue therefore needs no layout override at all — the shell
+   is still a row, and only the notch clearance for the notice strip has to be
+   added, because nothing above it in the shell insets for the status bar.
+   ========================================================================== */
+
+@media (max-width: 719px) {
+  /* The notice sits directly under the status bar, so it has to clear the
+     notch itself — nothing above it in the shell does. */
+  .global-notice {
+    padding-top: calc(var(--space-2) + var(--safe-top));
+    padding-left: calc(var(--content-pad) + var(--safe-left));
+    padding-right: calc(var(--content-pad) + var(--safe-right));
+  }
 }
 </style>

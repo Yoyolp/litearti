@@ -419,7 +419,25 @@ async function main() {
 
   console.log('MXdm: video detail')
   {
-    check('a title was read', (out.mxdm.detail.title ?? '').length > 0, out.mxdm.detail.title)
+    // This assertion used to be `title.length > 0`, and it passed — but only because
+    // the engine **invented** the string '未命名' when the selector missed. The
+    // fixture page has no `<h1>`, so the selector does miss, and the real behaviour
+    // was "we have no title". The old assertion was measuring the placeholder, not
+    // the parse.
+    //
+    // What matters now is that a miss is reported honestly as an empty string, so the
+    // view can fall back to the title from the search result. Returning a truthy
+    // placeholder is what made every card say 未命名.
+    check(
+      'a missing title selector yields an empty string, not a placeholder',
+      out.mxdm.detail.title === '',
+      JSON.stringify(out.mxdm.detail.title),
+    )
+    check(
+      'the placeholder text never appears',
+      !String(out.mxdm.detail.title).includes('未命名'),
+      JSON.stringify(out.mxdm.detail.title),
+    )
     equal('one road', out.mxdm.detail.roads, 1)
     check(
       'episodes were enumerated',

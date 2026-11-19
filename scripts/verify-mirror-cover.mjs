@@ -253,9 +253,13 @@ async function main() {
     const second = await session.command('bangumi_cover', { url })
     const elapsed = Date.now() - started
     check('the second attempt also returns null', second.ok && second.value === null)
-    // The first attempt had to open a socket; the second is answered from the failure
-    // record. Under 100 ms is clearly the cached path.
-    check(`the second attempt is not retried (${elapsed} ms)`, elapsed < 100, `${elapsed} ms`)
+    // The first attempt paid a full connect timeout (4 s); the second is answered
+    // from the failure record before any socket is opened. 500 ms is far above a
+    // local file read and far below a network attempt, so it separates the two
+    // without being sensitive to machine load — the previous 100 ms limit failed
+    // intermittently for no reason but scheduling, which teaches people to ignore
+    // the test.
+    check(`the second attempt is not retried (${elapsed} ms)`, elapsed < 500, `${elapsed} ms`)
   }
 
   console.log('cover cache: a bad scheme is refused')

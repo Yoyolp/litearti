@@ -210,7 +210,7 @@ async fn fetch(root: &Path, url: &str, cache_key: &str, _mirror: Mirror) -> AppR
         .await
         .map_err(|_| AppError::Invalid("请求排队失败".to_string()))?;
 
-    let client = reqwest::Client::builder()
+    let client = crate::tls::builder()
         .timeout(REQUEST_TIMEOUT)
         .user_agent(concat!("litearti/", env!("CARGO_PKG_VERSION")))
         .build()

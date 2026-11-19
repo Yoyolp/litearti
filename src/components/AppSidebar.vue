@@ -273,4 +273,62 @@ const emit = defineEmits<{
 .chevron.is-flipped {
   transform: rotate(180deg);
 }
+
+/* ==========================================================================
+   Narrow viewports
+
+   The sidebar keeps its identity here; it does not become a different control.
+   Below 720px the shell starts in the rail (icons-only) state instead of the
+   full-width one, which is the same collapse mechanism the desktop already has —
+   only the default differs. That keeps one component and one code path, and it
+   leaves the person able to expand it if they prefer.
+
+   Why not a bottom bar: four constantly-used destinations do not earn the
+   permanent horizontal strip, and moving navigation to the bottom changes the
+   app's visual identity for the sake of a narrower screen.
+
+   Why not a drawer: it would hide the current location and add a tap to every
+   navigation.
+
+   The default is applied in App.vue (the `collapsed` prop is owned there), so
+   this block only adjusts geometry for the rail on a small screen.
+   ========================================================================== */
+
+@media (max-width: 719px) {
+  .sidebar {
+    /* The rail is 56px; on a 360px phone that leaves ~300px for content, which
+       is a readable column for the text sizes this app uses. */
+    padding: var(--space-2) var(--space-1) var(--space-1);
+    /* Clear the status bar / cutout at the top and the gesture bar at the
+       bottom — the sidebar spans the full height, so it owns both insets. */
+    padding-top: calc(var(--space-2) + var(--safe-top));
+    padding-bottom: calc(var(--space-1) + var(--safe-bottom));
+    padding-left: calc(var(--space-1) + var(--safe-left));
+  }
+
+  /* A tapped nav item must not keep its hover fill; see the hover block below. */
+  .nav-item {
+    height: var(--hit-touch);
+    border-radius: var(--radius-md);
+  }
+
+  .brand {
+    margin-bottom: var(--space-4);
+  }
+}
+
+/* Touch feedback: `:hover` sticks after a tap, which reads as a stuck
+   selection. Only apply hover styling where a real pointer exists. */
+@media (hover: none) {
+  .nav-item:hover {
+    background: transparent;
+    color: var(--ink-secondary);
+  }
+
+  .nav-item.is-active:hover {
+    background: var(--surface-raised);
+    color: var(--ink-primary);
+  }
+}
+
 </style>

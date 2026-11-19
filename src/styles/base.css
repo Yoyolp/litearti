@@ -1,4 +1,4 @@
-﻿/* ==========================================================================
+/* ==========================================================================
    Base layer — element defaults and the shared primitives every screen uses.
 
    Rule of thumb throughout: if a rule needs a number, it reads a token.
@@ -17,6 +17,17 @@ body,
   margin: 0;
 }
 
+/* Mobile browsers resize the layout viewport when the URL bar collapses, which
+   makes `100%` jump. `100dvh` tracks the *dynamic* viewport instead. Kept
+   alongside the percentage so older engines still get a sane height. */
+@supports (height: 100dvh) {
+  html,
+  body,
+  #app {
+    height: 100dvh;
+  }
+}
+
 body {
   background: var(--surface-page);
   color: var(--ink-primary);
@@ -26,6 +37,13 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow: hidden;
+  /* Stop the rubber-band scroll of the page body on iOS/Android. Real
+     scrolling happens inside the app's own panes; letting the document move
+     would detach the fixed chrome from the content. */
+  overscroll-behavior: none;
+  /* Long-press on Android otherwise pops a text-selection handle on chrome. */
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Native-feeling: no text selection on chrome, selection allowed in content. */
