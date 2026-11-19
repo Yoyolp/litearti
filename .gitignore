@@ -14,3 +14,6 @@ demo/
 *.local
 .devlog*.txt
 
+# android build-file
+release-android/
+src-tauri/gen/app/build/
